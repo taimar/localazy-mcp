@@ -21,7 +21,7 @@ cp .mcp.example.json .mcp.json
 
 Edit `.mcp.json` and fill in:
 - `cwd` — absolute path to your clone of this repo
-- `LOCALAZY_API_TOKEN` — the Localazy project token (ask the team or get one from [Localazy Developer Console](https://localazy.com/developer/tokens))
+- `LOCALAZY_API_TOKEN` — get one from [Localazy Console](https://localazy.com/developer/tokens)
 
 You can also add optional env variables to tune key search limits:
 - `LOCALAZY_SEARCH_MAX_RESULTS` — max matching keys returned (default: 1000)
