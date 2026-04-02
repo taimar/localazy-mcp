@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "localazy": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "cwd": "/absolute/path/to/your/localazy-mcp-clone",
+      "env": {
+        "LOCALAZY_API_TOKEN": "<company-localazy-project-token>"
+      }
+    }
+  }
+}
