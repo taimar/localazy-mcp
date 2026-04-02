@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 .env
 .mcp.json
+.claude/
+.agents/
+skills-lock.json
