@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 
 type TranslationValue = string | string[] | { [key: string]: TranslationValue };
 type TranslationFile = Record<string, TranslationValue>;
@@ -96,7 +97,7 @@ Examples:
     }) => {
       try {
         const api = getClient();
-        const result = await api.import.json({
+        const result = await withRetry(() => api.import.json({
           project: project_id,
           json: translations,
           fileOptions: {
@@ -108,7 +109,7 @@ Examples:
             forceSource: force_source,
             importAsNew: import_as_new,
           },
-        });
+        }));
 
         return jsonResponse(result);
       } catch (error) {

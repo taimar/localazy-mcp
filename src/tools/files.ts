@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 
 export function register(server: McpServer): void {
   server.registerTool(
@@ -37,7 +38,7 @@ Examples:
     async ({ project_id }) => {
       try {
         const api = getClient();
-        const files = await api.files.list({ project: project_id });
+        const files = await withRetry(() => api.files.list({ project: project_id }));
         return jsonResponse(files);
       } catch (error) {
         return errorResponse(handleError(error));

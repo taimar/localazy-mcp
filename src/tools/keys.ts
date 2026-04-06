@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 import { asLocale, localazyLocaleSchema } from "../types.js";
 import type { Key } from "../types.js";
 
@@ -117,14 +118,14 @@ Examples:
     async ({ project_id, file_id, lang, limit, next, extra_info }) => {
       try {
         const api = getClient();
-        const result = await api.files.listKeysPage({
+        const result = await withRetry(() => api.files.listKeysPage({
           project: project_id,
           file: file_id,
           lang: asLocale(lang),
           limit,
           next,
           extra_info,
-        });
+        }));
 
         const output = formatListKeysPageOutput(result, extra_info);
 
@@ -183,7 +184,7 @@ Examples:
 
         const state = { matchesFound: 0 };
 
-        const files = await api.files.list({ project: project_id });
+        const files = await withRetry(() => api.files.list({ project: project_id }));
 
         const fileResults = await mapWithConcurrency(
           files,
@@ -198,15 +199,19 @@ Examples:
               if (state.matchesFound >= MAX_RESULTS) break;
               filePages++;
 
-              const result = await api.files.listKeysPage({
-                project: project_id,
-                file: file.id,
-                lang: asLocale(lang),
-                limit: 1000,
-                next: nextCursor,
-              });
+              const result = await withRetry(() =>
+                api.files.listKeysPage({
+                  project: project_id,
+                  file: file.id,
+                  lang: asLocale(lang),
+                  limit: 1000,
+                  next: nextCursor,
+                })
+              );
 
               for (const k of result.keys) {
+                if (state.matchesFound >= MAX_RESULTS) break;
+
                 const keyPath = formatKeyPath(k);
                 const valueStr =
                   typeof k.value === "string"
@@ -230,8 +235,9 @@ Examples:
           () => state.matchesFound >= MAX_RESULTS,
         );
 
-        const matches = fileResults.flat().slice(0, MAX_RESULTS);
-        const truncated = fileResults.flat().length > MAX_RESULTS;
+        const allMatches = fileResults.flat();
+        const matches = allMatches.slice(0, MAX_RESULTS);
+        const truncated = allMatches.length > MAX_RESULTS;
 
         if (matches.length === 0) {
           return jsonResponse({

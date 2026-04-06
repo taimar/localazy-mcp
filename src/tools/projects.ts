@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 
 export function register(server: McpServer): void {
   server.registerTool(
@@ -29,7 +30,7 @@ Examples:
     async () => {
       try {
         const api = getClient();
-        const projects = await api.projects.list();
+        const projects = await withRetry(() => api.projects.list());
         return jsonResponse(projects);
       } catch (error) {
         return errorResponse(handleError(error));

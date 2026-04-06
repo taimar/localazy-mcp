@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { CHARACTER_LIMIT } from "../constants.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse, textResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 import {
   asLocale,
   asLocales,
@@ -50,13 +52,46 @@ Examples:
     async ({ project_id, file_id, langs }) => {
       try {
         const api = getClient();
-        const result = await api.export.json({
-          project: project_id,
-          file: file_id,
-          langs: asLocales(langs),
-        });
+        const fullResult = await withRetry(() =>
+          api.export.json({
+            project: project_id,
+            file: file_id,
+            langs: asLocales(langs),
+          })
+        ) as Record<string, unknown>;
 
-        return jsonResponse(result, "Try exporting fewer languages.");
+        // Build result language-by-language to avoid mid-JSON truncation
+        const result: Record<string, unknown> = {};
+        const includedLangs: string[] = [];
+        const omittedLangs: string[] = [];
+
+        for (const lang of langs) {
+          if (!(lang in fullResult)) continue;
+          const candidate = { ...result, [lang]: fullResult[lang] };
+          if (JSON.stringify(candidate).length > CHARACTER_LIMIT) {
+            omittedLangs.push(lang);
+            continue;
+          }
+          result[lang] = fullResult[lang];
+          includedLangs.push(lang);
+        }
+
+        if (includedLangs.length === 0) {
+          return errorResponse(
+            `Even a single language exceeds the ${CHARACTER_LIMIT} character limit for this file. ` +
+            `Use localazy_download_file for individual language downloads, or set ` +
+            `LOCALAZY_CHARACTER_LIMIT to a higher value.`
+          );
+        }
+
+        if (omittedLangs.length > 0) {
+          return jsonResponse({
+            _warning: `Response too large for all languages. Included: [${includedLangs.join(", ")}]. Omitted: [${omittedLangs.join(", ")}]. Use localazy_download_file for individual languages.`,
+            ...result,
+          });
+        }
+
+        return jsonResponse(result);
       } catch (error) {
         return errorResponse(handleError(error));
       }
@@ -99,11 +134,11 @@ Examples:
     async ({ project_id, file_id, lang }) => {
       try {
         const api = getClient();
-        const blob = await api.files.getContents({
+        const blob = await withRetry(() => api.files.getContents({
           project: project_id,
           file: file_id,
           lang: asLocale(lang),
-        });
+        }));
         const text = await blob.text();
 
         // Raw file contents — try to parse as JSON for pretty-printing

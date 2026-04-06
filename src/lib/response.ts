@@ -22,7 +22,7 @@ function truncateText(text: string, truncationHint?: string): string {
  * Truncates if the serialized output exceeds CHARACTER_LIMIT.
  */
 export function jsonResponse(data: unknown, truncationHint?: string): ToolResult {
-  const text = truncateText(JSON.stringify(data, null, 2), truncationHint);
+  const text = truncateText(JSON.stringify(data), truncationHint);
   return { content: [{ type: "text", text }] };
 }
 

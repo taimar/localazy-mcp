@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
+import { withRetry } from "../lib/retry.js";
 import { asLocale, localazyLocaleSchema } from "../types.js";
 
 export function register(server: McpServer): void {
@@ -34,7 +35,7 @@ Examples:
     async ({ project_id }) => {
       try {
         const api = getClient();
-        const terms = await api.glossary.list({ project: project_id });
+        const terms = await withRetry(() => api.glossary.list({ project: project_id }));
         return jsonResponse(terms);
       } catch (error) {
         return errorResponse(handleError(error));
@@ -102,13 +103,13 @@ Examples:
     }) => {
       try {
         const api = getClient();
-        const id = await api.glossary.create({
+        const id = await withRetry(() => api.glossary.create({
           project: project_id,
           description: description ?? "",
           translateTerm: translate_term,
           caseSensitive: case_sensitive,
           term: terms.map((t) => ({ ...t, lang: asLocale(t.lang) })),
-        });
+        }));
 
         return jsonResponse({ success: true, glossary_term_id: id });
       } catch (error) {
@@ -148,10 +149,10 @@ Examples:
     async ({ project_id, glossary_term_id }) => {
       try {
         const api = getClient();
-        await api.glossary.delete({
+        await withRetry(() => api.glossary.delete({
           project: project_id,
           glossaryRecord: glossary_term_id,
-        });
+        }));
 
         return jsonResponse({ success: true, deleted: glossary_term_id });
       } catch (error) {
