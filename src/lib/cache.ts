@@ -27,14 +27,32 @@ const CACHE_TTL = 5 * 60_000; // 5 minutes
 /** Shared cache instance for API responses. */
 export const apiCache = new TTLCache<unknown>();
 
+/** In-flight requests for singleflight deduplication. */
+const inflight = new Map<string, Promise<unknown>>();
+
 /**
  * Fetch with caching. Returns the cached value if present and not expired,
  * otherwise calls `fn`, caches the result, and returns it.
+ *
+ * Concurrent callers for the same key share a single in-flight request
+ * (singleflight) so only one API call is made.
  */
 export async function cached<T>(key: string, fn: () => Promise<T>, ttlMs = CACHE_TTL): Promise<T> {
   const hit = apiCache.get(key) as T | undefined;
   if (hit !== undefined) return hit;
-  const value = await fn();
-  apiCache.set(key, value, ttlMs);
-  return value;
+
+  const pending = inflight.get(key) as Promise<T> | undefined;
+  if (pending !== undefined) return pending;
+
+  const promise = fn().then(
+    (value) => {
+      apiCache.set(key, value, ttlMs);
+      return value;
+    },
+  ).finally(() => {
+    inflight.delete(key);
+  });
+
+  inflight.set(key, promise);
+  return promise;
 }

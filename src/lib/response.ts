@@ -52,7 +52,7 @@ export function jsonResponseArray<T>(
   }
 
   const [fitted, total] = fitWithinBudget(items.map(i => JSON.stringify(i)), budget);
-  const included = fitted.map(f => JSON.parse(f));
+  const included = items.slice(0, fitted.length);
   const truncated = included.length < total;
 
   const result: Record<string, unknown> = { ...wrapper, [itemsKey]: included };

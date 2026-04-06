@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TTLCache } from "../src/lib/cache.js";
+import { TTLCache, cached, apiCache } from "../src/lib/cache.js";
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
 import { jsonResponseArray } from "../src/lib/response.js";
@@ -81,9 +81,6 @@ test("formatListKeysPageOutput includes extra_info metadata", () => {
         id: "key-1",
         key: "common.greeting",
         value: "Hello",
-        comment: "",
-        deprecated: -1,
-        hidden: false,
         limit: 40,
       },
     ],
@@ -169,6 +166,38 @@ test("TTLCache returns cached values and expires them after TTL", async () => {
 
   // Missing keys return undefined
   assert.equal(cache.get("missing"), undefined);
+});
+
+test("cached() deduplicates concurrent requests for the same key", async () => {
+  let callCount = 0;
+  const fn = () => new Promise<string>((resolve) => {
+    callCount++;
+    setTimeout(() => resolve("result"), 20);
+  });
+
+  const results = await Promise.all([
+    cached("dedup-test", fn),
+    cached("dedup-test", fn),
+    cached("dedup-test", fn),
+    cached("dedup-test", fn),
+    cached("dedup-test", fn),
+  ]);
+
+  assert.equal(callCount, 1, "fn should be called exactly once");
+  for (const r of results) {
+    assert.equal(r, "result");
+  }
+});
+
+test("cached() does not poison cache when fn rejects", async () => {
+  let attempt = 0;
+  const failing = () => { attempt++; return Promise.reject(new Error("boom")); };
+  const succeeding = () => { attempt++; return Promise.resolve("ok"); };
+
+  await assert.rejects(() => cached("poison-test", failing), /boom/);
+  const result = await cached("poison-test", succeeding);
+  assert.equal(result, "ok");
+  assert.equal(attempt, 2, "second fn should have been called after first rejection");
 });
 
 test("RateLimiter acquire() is immediate when tokens are available", async () => {

@@ -12,6 +12,13 @@ function formatKeyPath(key: Key): string {
   return key.key.join(".");
 }
 
+function keysPageCacheKey(
+  projectId: string, fileId: string, lang: string,
+  limit: number, extraInfo: boolean, cursor?: string,
+): string {
+  return `keys:${projectId}:${fileId}:${lang}:${limit}:${extraInfo}:${cursor ?? "first"}`;
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -55,12 +62,14 @@ export function formatListKeysPageOutput(
       ...(extraInfo ? { id: k.id } : {}),
       key: formatKeyPath(k),
       value: k.value,
-      ...(extraInfo && k.comment !== undefined ? { comment: k.comment } : {}),
-      ...(extraInfo && k.deprecated !== undefined
+      ...(extraInfo && k.comment ? { comment: k.comment } : {}),
+      ...(extraInfo && k.deprecated !== undefined && k.deprecated !== -1
         ? { deprecated: k.deprecated }
         : {}),
-      ...(extraInfo && k.hidden !== undefined ? { hidden: k.hidden } : {}),
-      ...(extraInfo && k.limit !== undefined ? { limit: k.limit } : {}),
+      ...(extraInfo && k.hidden ? { hidden: k.hidden } : {}),
+      ...(extraInfo && k.limit !== undefined && k.limit !== -1
+        ? { limit: k.limit }
+        : {}),
     })),
   };
 }
@@ -125,49 +134,37 @@ Examples:
     async ({ project_id, file_id, lang, limit, next, prefix, extra_info }) => {
       try {
         const api = getClient();
-        const params = {
-          project: project_id,
-          file: file_id,
-          lang: asLocale(lang),
-          limit,
-          next,
-          extra_info,
-        };
-        const result = await withRetry(() => api.files.listKeysPage(params));
-
-        const output = formatListKeysPageOutput(result, extra_info);
-
-        // Apply client-side prefix filter if specified
-        const keys = prefix
-          ? output.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
-          : output.keys;
-
         const hint = "Use a smaller 'limit', pagination with the 'next' cursor, or a 'prefix' filter.";
+
+        const fetchPage = async (pageLimit: number) => {
+          const cacheKey = keysPageCacheKey(project_id, file_id, lang, pageLimit, extra_info, next);
+          const result = await cached(cacheKey, () =>
+            withRetry(() => api.files.listKeysPage({
+              project: project_id, file: file_id, lang: asLocale(lang),
+              limit: pageLimit, next, extra_info,
+            }))
+          );
+          const output = formatListKeysPageOutput(result, extra_info);
+          const keys = prefix
+            ? output.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
+            : output.keys;
+          return { result, keys, next: output.next };
+        };
+
+        const page = await fetchPage(limit);
         const response = jsonResponseArray(
-          keys,
-          "keys",
-          { count: keys.length, ...(output.next ? { next: output.next } : {}) },
+          page.keys, "keys",
+          { count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
           hint,
         );
 
         // If truncation occurred but the API had no more pages, re-fetch with
         // a reduced limit so the API returns a real `next` cursor for recovery.
-        if (response._arrayMeta.truncated && !result.next) {
-          const safeLimit = response._arrayMeta.includedCount;
-          const retryResult = await withRetry(() => api.files.listKeysPage({
-            ...params,
-            limit: safeLimit,
-          }));
-
-          const retryOutput = formatListKeysPageOutput(retryResult, extra_info);
-          const retryKeys = prefix
-            ? retryOutput.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
-            : retryOutput.keys;
-
+        if (response._arrayMeta.truncated && !page.result.next) {
+          const retry = await fetchPage(response._arrayMeta.includedCount);
           return jsonResponseArray(
-            retryKeys,
-            "keys",
-            { count: retryKeys.length, ...(retryOutput.next ? { next: retryOutput.next } : {}) },
+            retry.keys, "keys",
+            { count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
             hint,
           );
         }
@@ -256,7 +253,7 @@ Examples:
               if (state.matchesFound >= MAX_RESULTS) break;
               filePages++;
 
-              const cacheKey = `keys:${project_id}:${file.id}:${lang}:${nextCursor ?? "first"}`;
+              const cacheKey = keysPageCacheKey(project_id, file.id, lang, 1000, false, nextCursor);
               const result = await cached(cacheKey, () =>
                 withRetry(() =>
                   api.files.listKeysPage({
