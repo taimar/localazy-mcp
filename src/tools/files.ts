@@ -13,7 +13,7 @@ export function register(server: McpServer): void {
       title: "List Project Files",
       description: `List all translation files in a Localazy project.
 
-Returns file details including ID, name, type, and path. Use file IDs from the results with localazy_list_keys, localazy_export_translations, etc.
+Returns file details including ID, name, type, and path. Use file IDs from the results with localazy_list_keys, localazy_search_keys, etc.
 
 Args:
   - project_id (string): Project ID from localazy_list_projects

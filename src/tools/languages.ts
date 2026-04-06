@@ -8,20 +8,16 @@ import { withRetry } from "../lib/retry.js";
 
 type ProjectWithLanguages = { id: string; languages?: unknown[] };
 
-async function fetchProjectLanguages(projectId: string): Promise<unknown[] | null> {
+async function fetchProjectLanguages(projectId: string): Promise<unknown[]> {
   const api = getClient();
-
-  try {
-    const projects = await withRetry(() =>
-      api.projects.list({ languages: true })
-    ) as ProjectWithLanguages[];
-    const project = projects.find((p) => p.id === projectId);
-    if (project?.languages) return project.languages;
-  } catch {
-    // endpoint failed
+  const projects = await withRetry(() =>
+    api.projects.list({ languages: true })
+  ) as ProjectWithLanguages[];
+  const project = projects.find((p) => p.id === projectId);
+  if (!project?.languages) {
+    throw new Error(`No languages found for project '${projectId}'`);
   }
-
-  return null;
+  return project.languages;
 }
 
 export function register(server: McpServer): void {
@@ -56,16 +52,7 @@ Examples:
       try {
         const languages = await cached(`languages:${project_id}`, () =>
           fetchProjectLanguages(project_id)
-        ) as unknown[] | null;
-
-        if (!languages) {
-          return errorResponse(
-            `Error: Could not retrieve languages for project '${project_id}'. ` +
-            `Check your LOCALAZY_API_TOKEN permissions and that the project ID is correct. ` +
-            `Use localazy_list_projects to get valid IDs.`
-          );
-        }
-
+        );
         return jsonResponse(languages);
       } catch (error) {
         return errorResponse(handleError(error));

@@ -259,15 +259,14 @@ test("jsonResponseArray exposes _arrayMeta with truncation info", () => {
 });
 
 test("RateLimiter queues when tokens are exhausted", async () => {
-  // 2 tokens/min = 1 token every 30 seconds, but we drain both instantly
-  const limiter = new RateLimiter(2);
-  await limiter.acquire();
-  await limiter.acquire();
+  // 120 tokens/min = 1 token every 500ms. Drain all, then next acquire must wait.
+  const limiter = new RateLimiter(120);
+  for (let i = 0; i < 120; i++) await limiter.acquire();
 
-  // Third acquire must wait for a refill
   const start = Date.now();
   await limiter.acquire();
   const elapsed = Date.now() - start;
-  // Should have waited ~30s worth (30_000ms), but at least a few hundred ms
-  assert.equal(elapsed > 100, true);
+  // Should wait ~500ms for one token refill
+  assert.equal(elapsed >= 400, true);
+  assert.equal(elapsed < 2000, true);
 });
