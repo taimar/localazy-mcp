@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { cached } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
@@ -148,6 +149,7 @@ Args:
   - project_id (string): Project ID
   - query (string): Search term to match against key names or values (max 500 chars)
   - lang (string): Language code (default: "en")
+  - file_ids (string[]): Optional: limit search to specific file IDs (from localazy_list_files). Searches all files if omitted.
 
 Returns:
   Array of matching keys (max 1000 results) with: key path, value, file name.
@@ -165,6 +167,10 @@ Examples:
         lang: localazyLocaleSchema
           .default("en")
           .describe("Valid Localazy language code (default: en)"),
+        file_ids: z
+          .array(z.string())
+          .optional()
+          .describe("Optional: limit search to specific file IDs (from localazy_list_files). Searches all files if omitted."),
       },
       annotations: {
         readOnlyHint: true,
@@ -173,18 +179,27 @@ Examples:
         openWorldHint: true,
       },
     },
-    async ({ project_id, query, lang }) => {
+    async ({ project_id, query, lang, file_ids }) => {
       try {
         const api = getClient();
         const lowerQuery = query.toLowerCase();
         const MAX_RESULTS = parseInt(process.env.LOCALAZY_SEARCH_MAX_RESULTS ?? "1000", 10);
         // 1 page = 1000 keys. LOCALAZY_SEARCH_MAX_PAGES=0 for no cap.
         const MAX_PAGES = parseInt(process.env.LOCALAZY_SEARCH_MAX_PAGES ?? "10", 10) || Infinity;
-        const CONCURRENCY = Math.max(1, parseInt(process.env.LOCALAZY_SEARCH_CONCURRENCY ?? "10", 10));
+        const CONCURRENCY = Math.max(1, parseInt(process.env.LOCALAZY_SEARCH_CONCURRENCY ?? "3", 10));
 
         const state = { matchesFound: 0 };
 
-        const files = await withRetry(() => api.files.list({ project: project_id }));
+        const allFiles = await cached(`files:${project_id}`, () =>
+          withRetry(() => api.files.list({ project: project_id }))
+        );
+
+        // Optionally narrow to specific files
+        let files = allFiles;
+        if (file_ids?.length) {
+          const idSet = new Set(file_ids);
+          files = allFiles.filter((f: { id: string }) => idSet.has(f.id));
+        }
 
         const fileResults = await mapWithConcurrency(
           files,

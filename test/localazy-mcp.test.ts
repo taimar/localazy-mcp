@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { TTLCache } from "../src/lib/cache.ts";
+import { RateLimiter } from "../src/lib/rate-limiter.ts";
 import { CHARACTER_LIMIT } from "../src/constants.ts";
 import { handleError } from "../src/lib/errors.ts";
 import { textResponse } from "../src/lib/response.ts";
@@ -165,4 +167,43 @@ test("handleError falls back cleanly for unknown statuses and non-status errors"
 
   assert.equal(handleError(new Error("Socket hang up")), "Error: Socket hang up");
   assert.equal(handleError("boom"), "Error: Unexpected error: boom");
+});
+
+test("TTLCache returns cached values and expires them after TTL", async () => {
+  const cache = new TTLCache<string>();
+
+  cache.set("a", "hello", 100);
+  assert.equal(cache.get("a"), "hello");
+
+  // Expired entries are pruned
+  cache.set("b", "world", 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(cache.get("b"), undefined);
+
+  // Missing keys return undefined
+  assert.equal(cache.get("missing"), undefined);
+});
+
+test("RateLimiter acquire() is immediate when tokens are available", async () => {
+  const limiter = new RateLimiter(100);
+  const start = Date.now();
+  await limiter.acquire();
+  await limiter.acquire();
+  const elapsed = Date.now() - start;
+  // Should be near-instant (well under 50ms)
+  assert.equal(elapsed < 50, true);
+});
+
+test("RateLimiter queues when tokens are exhausted", async () => {
+  // 2 tokens/min = 1 token every 30 seconds, but we drain both instantly
+  const limiter = new RateLimiter(2);
+  await limiter.acquire();
+  await limiter.acquire();
+
+  // Third acquire must wait for a refill
+  const start = Date.now();
+  await limiter.acquire();
+  const elapsed = Date.now() - start;
+  // Should have waited ~30s worth (30_000ms), but at least a few hundred ms
+  assert.equal(elapsed > 100, true);
 });

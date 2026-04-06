@@ -24,10 +24,11 @@ Edit `.mcp.json` and fill in:
 - `LOCALAZY_API_TOKEN` — get one from [Localazy Console](https://localazy.com/developer/tokens)
 
 You can also add optional env variables to tune behavior:
+- `LOCALAZY_RATE_LIMIT` — max API requests per minute (default: 90, Localazy limit is 100)
 - `LOCALAZY_SEARCH_MAX_RESULTS` — max matching keys returned (default: 1000)
 - `LOCALAZY_SEARCH_MAX_PAGES` — max API pages to scan, 1 page = 1000 keys (default: 10, set to 0 for no cap)
-- `LOCALAZY_SEARCH_CONCURRENCY` — parallel file searches (default: 10)
-- `LOCALAZY_CHARACTER_LIMIT` — max response size in characters (default: 25000, increase for large files)
+- `LOCALAZY_SEARCH_CONCURRENCY` — parallel file searches (default: 3)
+- `LOCALAZY_CHARACTER_LIMIT` — max response size in characters (default: 50000, increase for large files)
 
 ### 3. Connect to Claude
 

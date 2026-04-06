@@ -60,19 +60,24 @@ Examples:
           })
         ) as Record<string, unknown>;
 
-        // Build result language-by-language to avoid mid-JSON truncation
+        // Build result language-by-language, tracking size incrementally
+        // to avoid O(N * total_size) re-serialisation.
         const result: Record<string, unknown> = {};
         const includedLangs: string[] = [];
         const omittedLangs: string[] = [];
+        let cumulativeSize = 2; // starts as '{}'
 
         for (const lang of langs) {
           if (!(lang in fullResult)) continue;
-          const candidate = { ...result, [lang]: fullResult[lang] };
-          if (JSON.stringify(candidate).length > CHARACTER_LIMIT) {
+          const langJson = JSON.stringify(fullResult[lang]);
+          // +5 = quotes around key, colon, comma, quotes: "lang":...
+          const addedSize = lang.length + langJson.length + 4 + (includedLangs.length > 0 ? 1 : 0);
+          if (cumulativeSize + addedSize > CHARACTER_LIMIT) {
             omittedLangs.push(lang);
             continue;
           }
           result[lang] = fullResult[lang];
+          cumulativeSize += addedSize;
           includedLangs.push(lang);
         }
 

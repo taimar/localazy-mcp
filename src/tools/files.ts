@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { cached } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
@@ -38,7 +39,9 @@ Examples:
     async ({ project_id }) => {
       try {
         const api = getClient();
-        const files = await withRetry(() => api.files.list({ project: project_id }));
+        const files = await cached(`files:${project_id}`, () =>
+          withRetry(() => api.files.list({ project: project_id }))
+        );
         return jsonResponse(files);
       } catch (error) {
         return errorResponse(handleError(error));

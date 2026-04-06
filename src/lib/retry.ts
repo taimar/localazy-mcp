@@ -1,21 +1,35 @@
+import { rateLimiter } from "./rate-limiter.js";
+
 const STATUS_CODE_PATTERN = /status code (\d{3})/;
 
-function isClientError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
+function getStatusCode(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
   const match = error.message.match(STATUS_CODE_PATTERN);
-  if (!match) return false;
-  const code = parseInt(match[1], 10);
-  return code >= 400 && code < 500 && code !== 429;
+  return match ? parseInt(match[1], 10) : null;
 }
 
-/** Retries on 429, 5xx, and network failures. Does not retry other 4xx errors. */
+function isClientError(error: unknown): boolean {
+  const code = getStatusCode(error);
+  return code !== null && code >= 400 && code < 500 && code !== 429;
+}
+
+/**
+ * Acquires a rate-limiter token, then calls `fn`.
+ * Retries on 429, 5xx, and network failures. Does not retry other 4xx errors.
+ * Uses longer backoff for 429 to let the per-minute window reset.
+ */
 export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
+      await rateLimiter.acquire();
       return await fn();
     } catch (error) {
       if (attempt >= maxRetries || isClientError(error)) throw error;
-      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt + Math.random() * 500));
+
+      const isRateLimit = getStatusCode(error) === 429;
+      const baseDelay = isRateLimit ? 15_000 : 1000 * 2 ** attempt;
+      const jitter = Math.random() * (isRateLimit ? 5000 : 500);
+      await new Promise((r) => setTimeout(r, baseDelay + jitter));
     }
   }
 }
