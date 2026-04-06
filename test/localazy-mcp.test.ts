@@ -101,6 +101,33 @@ test("formatListKeysPageOutput includes extra_info metadata", () => {
   });
 });
 
+test("formatListKeysPageOutput omits key IDs when extra_info is false", () => {
+  const output = formatListKeysPageOutput(
+    {
+      next: undefined,
+      keys: [
+        {
+          id: "key-1",
+          key: ["common", "greeting"],
+          value: "Hello",
+        },
+      ],
+    },
+    false
+  );
+
+  assert.deepEqual(output, {
+    count: 1,
+    next: undefined,
+    keys: [
+      {
+        key: "common.greeting",
+        value: "Hello",
+      },
+    ],
+  });
+});
+
 test("handleError maps known HTTP status codes to friendly messages", () => {
   const cases = [
     {

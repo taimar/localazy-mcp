@@ -38,7 +38,7 @@ export function formatListKeysPageOutput(
   count: number;
   next: string | undefined;
   keys: Array<{
-    id: string;
+    id?: string;
     key: string;
     value: Key["value"];
     comment?: string;
@@ -51,7 +51,7 @@ export function formatListKeysPageOutput(
     count: result.keys.length,
     next: result.next,
     keys: result.keys.map((k) => ({
-      id: k.id,
+      ...(extraInfo ? { id: k.id } : {}),
       key: formatKeyPath(k),
       value: k.value,
       ...(extraInfo && k.comment !== undefined ? { comment: k.comment } : {}),
@@ -222,7 +222,11 @@ Examples:
                   keyPath.toLowerCase().includes(lowerQuery) ||
                   valueStr.toLowerCase().includes(lowerQuery)
                 ) {
-                  fileMatches.push({ key: keyPath, value: k.value, file: file.name });
+                  const displayValue =
+                    typeof k.value === "string" && k.value.length > 500
+                      ? k.value.slice(0, 500) + "..."
+                      : k.value;
+                  fileMatches.push({ key: keyPath, value: displayValue, file: file.name });
                   state.matchesFound++;
                 }
               }
