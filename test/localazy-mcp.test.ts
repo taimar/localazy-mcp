@@ -184,6 +184,9 @@ test("invalidateProject clears only the targeted project's entries", () => {
   assert.equal(apiCache.get("keys:projA:file2:en:1000:false:first"), undefined);
   assert.equal(apiCache.get("files:projB"), "fB");
   assert.equal(apiCache.get("keys:projB:file3:en:100:false:first"), "k3");
+
+  // Clean up so later tests don't see stale entries
+  invalidateProject("projB");
 });
 
 test("cached() deduplicates concurrent requests for the same key", async () => {
