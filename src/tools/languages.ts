@@ -35,11 +35,13 @@ Examples:
     async ({ project_id }) => {
       try {
         const api = getClient();
-        const projects = await api.projects.list({ languages: true });
-        const project = projects.find((p) => p.id === project_id);
-        if (!project) {
+        const project = await api.client.get(`/projects/${project_id}`, {
+          params: { languages: "true" },
+        }) as { languages?: unknown[] };
+
+        if (!project || !project.languages) {
           return errorResponse(
-            `Error: Project '${project_id}' not found. Use localazy_list_projects to get valid IDs.`
+            `Error: Project '${project_id}' not found or has no languages. Use localazy_list_projects to get valid IDs.`
           );
         }
 

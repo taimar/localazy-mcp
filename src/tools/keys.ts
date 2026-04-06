@@ -10,6 +10,26 @@ function formatKeyPath(key: Key): string {
   return key.key.join(".");
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+  shouldStop: () => boolean,
+): Promise<R[]> {
+  const results: R[] = [];
+  let index = 0;
+  async function worker(): Promise<void> {
+    while (index < items.length && !shouldStop()) {
+      const i = index++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+  return results;
+}
+
 export function formatListKeysPageOutput(
   result: { keys: Key[]; next?: string },
   extraInfo: boolean
@@ -159,18 +179,23 @@ Examples:
         const MAX_RESULTS = parseInt(process.env.LOCALAZY_SEARCH_MAX_RESULTS ?? "1000", 10);
         // 1 page = 1000 keys. LOCALAZY_SEARCH_MAX_PAGES=0 for no cap.
         const MAX_PAGES = parseInt(process.env.LOCALAZY_SEARCH_MAX_PAGES ?? "10", 10) || Infinity;
-        let totalPages = 0;
+        const CONCURRENCY = Math.max(1, parseInt(process.env.LOCALAZY_SEARCH_CONCURRENCY ?? "10", 10));
+
+        const state = { pagesUsed: 0, matchesFound: 0 };
 
         const files = await api.files.list({ project: project_id });
 
-        const fileResults = await Promise.all(
-          files.map(async (file) => {
+        const fileResults = await mapWithConcurrency(
+          files,
+          CONCURRENCY,
+          async (file) => {
             const fileMatches: Array<{ key: string; value: unknown; file: string }> = [];
             let nextCursor: string | undefined;
 
             do {
-              if (totalPages >= MAX_PAGES) break;
-              totalPages++;
+              if (MAX_PAGES !== Infinity && state.pagesUsed >= MAX_PAGES) break;
+              if (state.matchesFound >= MAX_RESULTS) break;
+              state.pagesUsed++;
 
               const result = await api.files.listKeysPage({
                 project: project_id,
@@ -192,6 +217,7 @@ Examples:
                   valueStr.toLowerCase().includes(lowerQuery)
                 ) {
                   fileMatches.push({ key: keyPath, value: k.value, file: file.name });
+                  state.matchesFound++;
                 }
               }
 
@@ -199,7 +225,8 @@ Examples:
             } while (nextCursor);
 
             return fileMatches;
-          })
+          },
+          () => state.matchesFound >= MAX_RESULTS || (MAX_PAGES !== Infinity && state.pagesUsed >= MAX_PAGES),
         );
 
         const matches = fileResults.flat().slice(0, MAX_RESULTS);
