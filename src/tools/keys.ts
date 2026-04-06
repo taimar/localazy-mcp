@@ -181,7 +181,7 @@ Examples:
         const MAX_PAGES = parseInt(process.env.LOCALAZY_SEARCH_MAX_PAGES ?? "10", 10) || Infinity;
         const CONCURRENCY = Math.max(1, parseInt(process.env.LOCALAZY_SEARCH_CONCURRENCY ?? "10", 10));
 
-        const state = { pagesUsed: 0, matchesFound: 0 };
+        const state = { matchesFound: 0 };
 
         const files = await api.files.list({ project: project_id });
 
@@ -191,11 +191,12 @@ Examples:
           async (file) => {
             const fileMatches: Array<{ key: string; value: unknown; file: string }> = [];
             let nextCursor: string | undefined;
+            let filePages = 0;
 
             do {
-              if (MAX_PAGES !== Infinity && state.pagesUsed >= MAX_PAGES) break;
+              if (MAX_PAGES !== Infinity && filePages >= MAX_PAGES) break;
               if (state.matchesFound >= MAX_RESULTS) break;
-              state.pagesUsed++;
+              filePages++;
 
               const result = await api.files.listKeysPage({
                 project: project_id,
@@ -226,7 +227,7 @@ Examples:
 
             return fileMatches;
           },
-          () => state.matchesFound >= MAX_RESULTS || (MAX_PAGES !== Infinity && state.pagesUsed >= MAX_PAGES),
+          () => state.matchesFound >= MAX_RESULTS,
         );
 
         const matches = fileResults.flat().slice(0, MAX_RESULTS);
