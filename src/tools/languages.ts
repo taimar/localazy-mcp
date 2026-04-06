@@ -8,21 +8,14 @@ import { withRetry } from "../lib/retry.js";
 
 type ProjectWithLanguages = { id: string; languages?: unknown[] };
 
-/**
- * Try two strategies for fetching project languages:
- * 1. SDK method: api.projects.list({ languages: true })
- * 2. Direct GET: /projects?languages=true  (bypasses SDK parameter handling)
- *
- * Some token types / API-client versions hit 404 with the SDK path,
- * so we fall back to the raw request.
- */
-async function fetchProjectLanguages(): Promise<unknown[] | null> {
+async function fetchProjectLanguages(projectId: string): Promise<unknown[] | null> {
   const api = getClient();
 
   try {
-    const project = await withRetry(() =>
-      api.projects.first({ languages: true })
-    ) as ProjectWithLanguages;
+    const projects = await withRetry(() =>
+      api.projects.list({ languages: true })
+    ) as ProjectWithLanguages[];
+    const project = projects.find((p) => p.id === projectId);
     if (project?.languages) return project.languages;
   } catch {
     // endpoint failed
@@ -62,7 +55,7 @@ Examples:
     async ({ project_id }) => {
       try {
         const languages = await cached(`languages:${project_id}`, () =>
-          fetchProjectLanguages()
+          fetchProjectLanguages(project_id)
         ) as unknown[] | null;
 
         if (!languages) {
