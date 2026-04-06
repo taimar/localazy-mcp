@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TTLCache, cached, apiCache } from "../src/lib/cache.js";
+import { TTLCache, cached, apiCache, invalidateProject } from "../src/lib/cache.js";
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
 import { jsonResponseArray } from "../src/lib/response.js";
@@ -166,6 +166,24 @@ test("TTLCache returns cached values and expires them after TTL", async () => {
 
   // Missing keys return undefined
   assert.equal(cache.get("missing"), undefined);
+});
+
+test("invalidateProject clears only the targeted project's entries", () => {
+  apiCache.set("files:projA", "fA", 60_000);
+  apiCache.set("languages:projA", "lA", 60_000);
+  apiCache.set("keys:projA:file1:en:100:false:first", "k1", 60_000);
+  apiCache.set("keys:projA:file2:en:1000:false:first", "k2", 60_000);
+  apiCache.set("files:projB", "fB", 60_000);
+  apiCache.set("keys:projB:file3:en:100:false:first", "k3", 60_000);
+
+  invalidateProject("projA");
+
+  assert.equal(apiCache.get("files:projA"), undefined);
+  assert.equal(apiCache.get("languages:projA"), undefined);
+  assert.equal(apiCache.get("keys:projA:file1:en:100:false:first"), undefined);
+  assert.equal(apiCache.get("keys:projA:file2:en:1000:false:first"), undefined);
+  assert.equal(apiCache.get("files:projB"), "fB");
+  assert.equal(apiCache.get("keys:projB:file3:en:100:false:first"), "k3");
 });
 
 test("cached() deduplicates concurrent requests for the same key", async () => {
