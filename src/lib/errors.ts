@@ -5,11 +5,16 @@
  */
 const STATUS_CODE_PATTERN = /status code (\d{3})/;
 
+export function getStatusCode(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const match = error.message.match(STATUS_CODE_PATTERN);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 export function handleError(error: unknown): string {
   if (error instanceof Error) {
     const msg = error.message;
-    const statusMatch = msg.match(STATUS_CODE_PATTERN);
-    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : null;
+    const statusCode = getStatusCode(error);
 
     if (statusCode === 401) {
       return "Error: Authentication failed. Check your LOCALAZY_API_TOKEN is valid.";

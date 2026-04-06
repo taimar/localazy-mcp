@@ -1,12 +1,5 @@
+import { getStatusCode } from "./errors.js";
 import { rateLimiter } from "./rate-limiter.js";
-
-const STATUS_CODE_PATTERN = /status code (\d{3})/;
-
-function getStatusCode(error: unknown): number | null {
-  if (!(error instanceof Error)) return null;
-  const match = error.message.match(STATUS_CODE_PATTERN);
-  return match ? parseInt(match[1], 10) : null;
-}
 
 function isClientError(error: unknown): boolean {
   const code = getStatusCode(error);
