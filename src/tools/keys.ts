@@ -87,11 +87,11 @@ Args:
   - lang (string): Language code (default: "en")
   - limit (number): Max keys per page, 1-1000 (default: 100)
   - next (string): Pagination cursor from previous response
-  - prefix (string): Filter keys by dot-path prefix (e.g. "detailViewer" returns only detailViewer.* keys). Applied client-side after fetching.
+  - prefix (string): Filter keys matching a dot-path prefix (e.g. "detailViewer" returns the exact key and all detailViewer.* children). Applied client-side after fetching.
   - extra_info (boolean): Include comments, deprecation status, hidden flag, and limits (default: false)
 
 Returns:
-  { keys: [{ id, key, value, ... }], next?: string }
+  { count, keys: [{ id, key, value, ... }], next?: string }
   Use the "next" value to fetch the next page.
 
 Examples:
@@ -118,7 +118,7 @@ Examples:
         prefix: z
           .string()
           .optional()
-          .describe("Filter keys by dot-path prefix (e.g. 'detailViewer' returns only detailViewer.* keys)"),
+          .describe("Filter keys matching a dot-path prefix (e.g. 'detailViewer' returns the exact key and all detailViewer.* children)"),
         extra_info: z
           .boolean()
           .default(false)
