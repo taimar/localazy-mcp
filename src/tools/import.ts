@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { invalidateProject } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
@@ -111,6 +112,7 @@ Examples:
           },
         }));
 
+        invalidateProject(project_id);
         return jsonResponse(result);
       } catch (error) {
         return errorResponse(handleError(error));

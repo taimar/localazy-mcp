@@ -20,12 +20,29 @@ export class TTLCache<T> {
   set(key: string, value: T, ttlMs: number): void {
     this.data.set(key, { value, expiresAt: Date.now() + ttlMs });
   }
+
+  delete(key: string): void {
+    this.data.delete(key);
+  }
+
+  deleteByPrefix(prefix: string): void {
+    for (const key of this.data.keys()) {
+      if (key.startsWith(prefix)) this.data.delete(key);
+    }
+  }
 }
 
-const CACHE_TTL = 5 * 60_000; // 5 minutes
+const CACHE_TTL = 10 * 60_000; // 10 minutes
 
 /** Shared cache instance for API responses. */
 export const apiCache = new TTLCache<unknown>();
+
+/** Clear all cached data for a project (call after import). */
+export function invalidateProject(projectId: string): void {
+  apiCache.delete(`files:${projectId}`);
+  apiCache.delete(`languages:${projectId}`);
+  apiCache.deleteByPrefix(`keys:${projectId}:`);
+}
 
 /** In-flight requests for singleflight deduplication. */
 const inflight = new Map<string, Promise<unknown>>();
