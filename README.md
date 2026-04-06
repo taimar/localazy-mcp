@@ -1,6 +1,6 @@
 # Localazy MCP Server
 
-Gives Claude access to our Localazy translations. Once set up, you can ask Claude to search keys, export translations, import updates, and manage glossary terms — all through natural conversation.
+Gives Claude access to our Localazy translations. Once set up, you can ask Claude to search keys, export translations, and import updates — all through natural conversation.
 
 ## Setup
 
@@ -46,8 +46,6 @@ Just talk to Claude about translations:
 - "What translation keys contain 'invoice'?"
 - "Show me the Estonian translations"
 - "Import these translations: ..."
-- "What glossary terms do we have?"
-
 Claude figures out project and file IDs automatically.
 
 ## Available tools
@@ -63,15 +61,12 @@ Claude figures out project and file IDs automatically.
 | `localazy_search_keys` | Search keys by name or value across all files |
 | `localazy_export_translations` | Export translations for multiple languages as JSON |
 | `localazy_download_file` | Download raw translation file contents |
-| `localazy_list_glossary` | List all glossary terms |
 
 ### Write
 
 | Tool | Description |
 |------|-------------|
 | `localazy_import_translations` | Import/upload translations |
-| `localazy_create_glossary_term` | Create a glossary term |
-| `localazy_delete_glossary_term` | Delete a glossary term |
 
 ## Development
 
