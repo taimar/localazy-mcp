@@ -119,25 +119,23 @@ Examples:
     "localazy_search_keys",
     {
       title: "Search Translation Keys",
-      description: `Search for translation keys matching a query within a file. Searches both key names and values (case-insensitive).
+      description: `Search for translation keys matching a query across all files in a Localazy project. Searches both key names and values (case-insensitive).
 
-Note: Localazy has no native search API, so this paginates through all keys and filters client-side. May be slow for very large files.
+Note: Localazy has no native search API, so this paginates through all keys in all files and filters client-side. May be slow for projects with many keys.
 
 Args:
   - project_id (string): Project ID
-  - file_id (string): File ID from localazy_list_files
   - query (string): Search term to match against key names or values (max 500 chars)
   - lang (string): Language code (default: "en")
 
 Returns:
-  Array of matching keys (max 1000 results) with: key path, value.
+  Array of matching keys (max 1000 results) with: key path, value, file name.
 
 Examples:
   - Use when: "Find all keys containing 'password'"
   - Use when: "Search for translations mentioning 'welcome'"`,
       inputSchema: {
         project_id: z.string().describe("Project ID"),
-        file_id: z.string().describe("File ID from localazy_list_files"),
         query: z
           .string()
           .min(1)
@@ -154,46 +152,53 @@ Examples:
         openWorldHint: true,
       },
     },
-    async ({ project_id, file_id, query, lang }) => {
+    async ({ project_id, query, lang }) => {
       try {
         const api = getClient();
-        const matches: Array<{ key: string; value: unknown }> = [];
+        const matches: Array<{ key: string; value: unknown; file: string }> = [];
         const lowerQuery = query.toLowerCase();
-        let nextCursor: string | undefined;
         const MAX_RESULTS = parseInt(process.env.LOCALAZY_SEARCH_MAX_RESULTS ?? "1000", 10);
         // 1 page = 1000 keys. LOCALAZY_SEARCH_MAX_PAGES=0 for no cap.
         const MAX_PAGES = parseInt(process.env.LOCALAZY_SEARCH_MAX_PAGES ?? "10", 10) || Infinity;
-        let pageCount = 0;
+        let totalPages = 0;
 
-        do {
-          const result = await api.files.listKeysPage({
-            project: project_id,
-            file: file_id,
-            lang: asLocale(lang),
-            limit: 1000,
-            next: nextCursor,
-          });
+        const files = await api.files.list({ project: project_id });
 
-          for (const k of result.keys) {
-            if (matches.length >= MAX_RESULTS) break;
+        for (const file of files) {
+          if (matches.length >= MAX_RESULTS || totalPages >= MAX_PAGES) break;
 
-            const keyPath = formatKeyPath(k);
-            const valueStr =
-              typeof k.value === "string"
-                ? k.value
-                : JSON.stringify(k.value);
+          let nextCursor: string | undefined;
 
-            if (
-              keyPath.toLowerCase().includes(lowerQuery) ||
-              valueStr.toLowerCase().includes(lowerQuery)
-            ) {
-              matches.push({ key: keyPath, value: k.value });
+          do {
+            const result = await api.files.listKeysPage({
+              project: project_id,
+              file: file.id,
+              lang: asLocale(lang),
+              limit: 1000,
+              next: nextCursor,
+            });
+
+            for (const k of result.keys) {
+              if (matches.length >= MAX_RESULTS) break;
+
+              const keyPath = formatKeyPath(k);
+              const valueStr =
+                typeof k.value === "string"
+                  ? k.value
+                  : JSON.stringify(k.value);
+
+              if (
+                keyPath.toLowerCase().includes(lowerQuery) ||
+                valueStr.toLowerCase().includes(lowerQuery)
+              ) {
+                matches.push({ key: keyPath, value: k.value, file: file.name });
+              }
             }
-          }
 
-          nextCursor = result.next;
-          pageCount++;
-        } while (nextCursor && matches.length < MAX_RESULTS && pageCount < MAX_PAGES);
+            nextCursor = result.next;
+            totalPages++;
+          } while (nextCursor && matches.length < MAX_RESULTS && totalPages < MAX_PAGES);
+        }
 
         if (matches.length === 0) {
           return jsonResponse({
