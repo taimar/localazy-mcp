@@ -58,10 +58,8 @@ Claude figures out project and file IDs automatically.
 | `localazy_list_projects` | List all accessible projects |
 | `localazy_list_files` | List translation files in a project |
 | `localazy_list_languages` | List languages with translation statistics |
-| `localazy_list_keys` | List translation keys with pagination |
+| `localazy_list_keys` | List translation keys with pagination and prefix filtering |
 | `localazy_search_keys` | Search keys by name or value across all files |
-| `localazy_export_translations` | Export translations for multiple languages as JSON |
-| `localazy_download_file` | Download raw translation file contents |
 
 ### Write
 

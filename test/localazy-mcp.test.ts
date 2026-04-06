@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TTLCache } from "../src/lib/cache.ts";
-import { RateLimiter } from "../src/lib/rate-limiter.ts";
-import { CHARACTER_LIMIT } from "../src/constants.ts";
-import { handleError } from "../src/lib/errors.ts";
-import { textResponse } from "../src/lib/response.ts";
-import { translationsSchema } from "../src/tools/import.ts";
-import { formatListKeysPageOutput } from "../src/tools/keys.ts";
-import { localazyLocaleSchema, localazyLocalesSchema } from "../src/types.ts";
+import { TTLCache } from "../src/lib/cache.js";
+import { RateLimiter } from "../src/lib/rate-limiter.js";
+import { handleError } from "../src/lib/errors.js";
+import { jsonResponseArray } from "../src/lib/response.js";
+import { translationsSchema } from "../src/tools/import.js";
+import { formatListKeysPageOutput } from "../src/tools/keys.js";
+import { localazyLocaleSchema, localazyLocalesSchema } from "../src/types.js";
 
 test("translationsSchema accepts nested objects, plural maps, and string arrays", () => {
   const result = translationsSchema.safeParse({
@@ -53,18 +52,6 @@ test("locale schemas accept valid locale codes and reject invalid ones", () => {
   assert.equal(localazyLocaleSchema.safeParse("french").success, false);
   assert.equal(localazyLocalesSchema.safeParse(["en", "de", "fr"]).success, true);
   assert.equal(localazyLocalesSchema.safeParse(["en", "french"]).success, false);
-});
-
-test("textResponse truncates oversized raw text payloads", () => {
-  const response = textResponse(
-    "x".repeat(CHARACTER_LIMIT + 500),
-    "Try a smaller file."
-  );
-  const text = response.content[0]?.text ?? "";
-
-  assert.equal(text.length <= CHARACTER_LIMIT, true);
-  assert.match(text, /\[TRUNCATED\]/);
-  assert.match(text, /Try a smaller file\./);
 });
 
 test("formatListKeysPageOutput includes extra_info metadata", () => {
@@ -192,6 +179,31 @@ test("RateLimiter acquire() is immediate when tokens are available", async () =>
   const elapsed = Date.now() - start;
   // Should be near-instant (well under 50ms)
   assert.equal(elapsed < 50, true);
+});
+
+test("jsonResponseArray truncates to valid JSON with _meta", () => {
+  const items = Array.from({ length: 5000 }, (_, i) => ({ key: `k.${i}`, value: "x".repeat(50) }));
+  const parsed = JSON.parse(jsonResponseArray(items, "keys", { query: "test" }).content[0]!.text);
+
+  assert.equal(parsed._meta.truncated, true);
+  assert.equal(parsed._meta.total, 5000);
+  assert.equal(parsed._meta.included, parsed.keys.length);
+  assert.equal(parsed.query, "test");
+});
+
+test("jsonResponseArray exposes _arrayMeta with truncation info", () => {
+  const small = Array.from({ length: 5 }, (_, i) => ({ key: `k.${i}`, value: "hi" }));
+  const result = jsonResponseArray(small, "keys");
+  assert.equal(result._arrayMeta.truncated, false);
+  assert.equal(result._arrayMeta.includedCount, 5);
+  assert.equal(result._arrayMeta.totalCount, 5);
+
+  const large = Array.from({ length: 5000 }, (_, i) => ({ key: `k.${i}`, value: "x".repeat(50) }));
+  const truncated = jsonResponseArray(large, "keys");
+  assert.equal(truncated._arrayMeta.truncated, true);
+  assert.equal(truncated._arrayMeta.totalCount, 5000);
+  assert.equal(truncated._arrayMeta.includedCount < 5000, true);
+  assert.equal(truncated._arrayMeta.includedCount > 0, true);
 });
 
 test("RateLimiter queues when tokens are exhausted", async () => {

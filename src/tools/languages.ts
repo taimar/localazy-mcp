@@ -16,29 +16,16 @@ type ProjectWithLanguages = { id: string; languages?: unknown[] };
  * Some token types / API-client versions hit 404 with the SDK path,
  * so we fall back to the raw request.
  */
-async function fetchProjectLanguages(projectId: string): Promise<unknown[] | null> {
+async function fetchProjectLanguages(): Promise<unknown[] | null> {
   const api = getClient();
 
-  // Strategy 1 — SDK helper
   try {
-    const projects = await withRetry(() =>
-      api.projects.list({ languages: true })
-    ) as ProjectWithLanguages[];
-    const project = projects.find((p) => p.id === projectId);
+    const project = await withRetry(() =>
+      api.projects.first({ languages: true })
+    ) as ProjectWithLanguages;
     if (project?.languages) return project.languages;
   } catch {
-    // fall through to strategy 2
-  }
-
-  // Strategy 2 — raw GET (bypasses SDK parameter serialisation)
-  try {
-    const projects = await withRetry(() =>
-      api.client.get("/projects", { params: { languages: "true" } })
-    ) as ProjectWithLanguages[];
-    const project = projects.find((p) => p.id === projectId);
-    if (project?.languages) return project.languages;
-  } catch {
-    // both strategies failed
+    // endpoint failed
   }
 
   return null;
@@ -75,7 +62,7 @@ Examples:
     async ({ project_id }) => {
       try {
         const languages = await cached(`languages:${project_id}`, () =>
-          fetchProjectLanguages(project_id)
+          fetchProjectLanguages()
         ) as unknown[] | null;
 
         if (!languages) {

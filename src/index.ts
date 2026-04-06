@@ -6,7 +6,6 @@ import { register as registerProjects } from "./tools/projects.js";
 import { register as registerFiles } from "./tools/files.js";
 import { register as registerLanguages } from "./tools/languages.js";
 import { register as registerKeys } from "./tools/keys.js";
-import { register as registerTranslations } from "./tools/translations.js";
 import { register as registerImport } from "./tools/import.js";
 
 const server = new McpServer({
@@ -18,7 +17,6 @@ registerProjects(server);
 registerFiles(server);
 registerLanguages(server);
 registerKeys(server);
-registerTranslations(server);
 registerImport(server);
 
 async function main(): Promise<void> {

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { cached } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
-import { jsonResponse, errorResponse } from "../lib/response.js";
+import { jsonResponseArray, errorResponse } from "../lib/response.js";
 import { withRetry } from "../lib/retry.js";
 import { asLocale, localazyLocaleSchema } from "../types.js";
 import type { Key } from "../types.js";
@@ -78,6 +78,7 @@ Args:
   - lang (string): Language code (default: "en")
   - limit (number): Max keys per page, 1-1000 (default: 100)
   - next (string): Pagination cursor from previous response
+  - prefix (string): Filter keys by dot-path prefix (e.g. "detailViewer" returns only detailViewer.* keys). Applied client-side after fetching.
   - extra_info (boolean): Include comments, deprecation status, hidden flag, and limits (default: false)
 
 Returns:
@@ -86,7 +87,8 @@ Returns:
 
 Examples:
   - Use when: "Show me the translation keys in this file"
-  - Use when: Browsing translations with pagination`,
+  - Use when: Browsing translations with pagination
+  - Use when: "Show me only the detailViewer keys" (use prefix parameter)`,
       inputSchema: {
         project_id: z.string().describe("Project ID"),
         file_id: z.string().describe("File ID from localazy_list_files"),
@@ -104,6 +106,10 @@ Examples:
           .string()
           .optional()
           .describe("Pagination cursor from previous response"),
+        prefix: z
+          .string()
+          .optional()
+          .describe("Filter keys by dot-path prefix (e.g. 'detailViewer' returns only detailViewer.* keys)"),
         extra_info: z
           .boolean()
           .default(false)
@@ -116,21 +122,57 @@ Examples:
         openWorldHint: true,
       },
     },
-    async ({ project_id, file_id, lang, limit, next, extra_info }) => {
+    async ({ project_id, file_id, lang, limit, next, prefix, extra_info }) => {
       try {
         const api = getClient();
-        const result = await withRetry(() => api.files.listKeysPage({
+        const params = {
           project: project_id,
           file: file_id,
           lang: asLocale(lang),
           limit,
           next,
           extra_info,
-        }));
+        };
+        const result = await withRetry(() => api.files.listKeysPage(params));
 
         const output = formatListKeysPageOutput(result, extra_info);
 
-        return jsonResponse(output, "Use a smaller 'limit' or pagination with the 'next' cursor.");
+        // Apply client-side prefix filter if specified
+        const keys = prefix
+          ? output.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
+          : output.keys;
+
+        const hint = "Use a smaller 'limit', pagination with the 'next' cursor, or a 'prefix' filter.";
+        const response = jsonResponseArray(
+          keys,
+          "keys",
+          { count: keys.length, ...(output.next ? { next: output.next } : {}) },
+          hint,
+        );
+
+        // If truncation occurred but the API had no more pages, re-fetch with
+        // a reduced limit so the API returns a real `next` cursor for recovery.
+        if (response._arrayMeta.truncated && !result.next) {
+          const safeLimit = response._arrayMeta.includedCount;
+          const retryResult = await withRetry(() => api.files.listKeysPage({
+            ...params,
+            limit: safeLimit,
+          }));
+
+          const retryOutput = formatListKeysPageOutput(retryResult, extra_info);
+          const retryKeys = prefix
+            ? retryOutput.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
+            : retryOutput.keys;
+
+          return jsonResponseArray(
+            retryKeys,
+            "keys",
+            { count: retryKeys.length, ...(retryOutput.next ? { next: retryOutput.next } : {}) },
+            hint,
+          );
+        }
+
+        return response;
       } catch (error) {
         return errorResponse(handleError(error));
       }
@@ -214,14 +256,17 @@ Examples:
               if (state.matchesFound >= MAX_RESULTS) break;
               filePages++;
 
-              const result = await withRetry(() =>
-                api.files.listKeysPage({
-                  project: project_id,
-                  file: file.id,
-                  lang: asLocale(lang),
-                  limit: 1000,
-                  next: nextCursor,
-                })
+              const cacheKey = `keys:${project_id}:${file.id}:${lang}:${nextCursor ?? "first"}`;
+              const result = await cached(cacheKey, () =>
+                withRetry(() =>
+                  api.files.listKeysPage({
+                    project: project_id,
+                    file: file.id,
+                    lang: asLocale(lang),
+                    limit: 1000,
+                    next: nextCursor,
+                  })
+                )
               );
 
               for (const k of result.keys) {
@@ -259,22 +304,18 @@ Examples:
         const truncated = allMatches.length > MAX_RESULTS;
 
         if (matches.length === 0) {
-          return jsonResponse({
-            query,
-            lang,
-            count: 0,
-            keys: [],
-            message: `No keys found matching '${query}' in language '${lang}'.`,
-          });
+          return jsonResponseArray(
+            [],
+            "keys",
+            { query, lang, count: 0, message: `No keys found matching '${query}' in language '${lang}'.` },
+          );
         }
 
-        return jsonResponse({
-          query,
-          lang,
-          count: matches.length,
-          truncated,
-          keys: matches,
-        });
+        return jsonResponseArray(
+          matches,
+          "keys",
+          { query, lang, count: matches.length, ...(truncated ? { truncated } : {}) },
+        );
       } catch (error) {
         return errorResponse(handleError(error));
       }
