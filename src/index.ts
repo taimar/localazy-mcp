@@ -8,7 +8,6 @@ import { register as registerLanguages } from "./tools/languages.js";
 import { register as registerKeys } from "./tools/keys.js";
 import { register as registerTranslations } from "./tools/translations.js";
 import { register as registerImport } from "./tools/import.js";
-import { register as registerGlossary } from "./tools/glossary.js";
 
 const server = new McpServer({
   name: "localazy-mcp-server",
@@ -21,7 +20,6 @@ registerLanguages(server);
 registerKeys(server);
 registerTranslations(server);
 registerImport(server);
-registerGlossary(server);
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
