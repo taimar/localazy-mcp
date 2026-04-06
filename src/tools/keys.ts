@@ -155,7 +155,6 @@ Examples:
     async ({ project_id, query, lang }) => {
       try {
         const api = getClient();
-        const matches: Array<{ key: string; value: unknown; file: string }> = [];
         const lowerQuery = query.toLowerCase();
         const MAX_RESULTS = parseInt(process.env.LOCALAZY_SEARCH_MAX_RESULTS ?? "1000", 10);
         // 1 page = 1000 keys. LOCALAZY_SEARCH_MAX_PAGES=0 for no cap.
@@ -164,41 +163,47 @@ Examples:
 
         const files = await api.files.list({ project: project_id });
 
-        for (const file of files) {
-          if (matches.length >= MAX_RESULTS || totalPages >= MAX_PAGES) break;
+        const fileResults = await Promise.all(
+          files.map(async (file) => {
+            const fileMatches: Array<{ key: string; value: unknown; file: string }> = [];
+            let nextCursor: string | undefined;
 
-          let nextCursor: string | undefined;
+            do {
+              if (totalPages >= MAX_PAGES) break;
+              totalPages++;
 
-          do {
-            const result = await api.files.listKeysPage({
-              project: project_id,
-              file: file.id,
-              lang: asLocale(lang),
-              limit: 1000,
-              next: nextCursor,
-            });
+              const result = await api.files.listKeysPage({
+                project: project_id,
+                file: file.id,
+                lang: asLocale(lang),
+                limit: 1000,
+                next: nextCursor,
+              });
 
-            for (const k of result.keys) {
-              if (matches.length >= MAX_RESULTS) break;
+              for (const k of result.keys) {
+                const keyPath = formatKeyPath(k);
+                const valueStr =
+                  typeof k.value === "string"
+                    ? k.value
+                    : JSON.stringify(k.value);
 
-              const keyPath = formatKeyPath(k);
-              const valueStr =
-                typeof k.value === "string"
-                  ? k.value
-                  : JSON.stringify(k.value);
-
-              if (
-                keyPath.toLowerCase().includes(lowerQuery) ||
-                valueStr.toLowerCase().includes(lowerQuery)
-              ) {
-                matches.push({ key: keyPath, value: k.value, file: file.name });
+                if (
+                  keyPath.toLowerCase().includes(lowerQuery) ||
+                  valueStr.toLowerCase().includes(lowerQuery)
+                ) {
+                  fileMatches.push({ key: keyPath, value: k.value, file: file.name });
+                }
               }
-            }
 
-            nextCursor = result.next;
-            totalPages++;
-          } while (nextCursor && matches.length < MAX_RESULTS && totalPages < MAX_PAGES);
-        }
+              nextCursor = result.next;
+            } while (nextCursor);
+
+            return fileMatches;
+          })
+        );
+
+        const matches = fileResults.flat().slice(0, MAX_RESULTS);
+        const truncated = fileResults.flat().length > MAX_RESULTS;
 
         if (matches.length === 0) {
           return jsonResponse({
@@ -214,7 +219,7 @@ Examples:
           query,
           lang,
           count: matches.length,
-          truncated: matches.length >= MAX_RESULTS,
+          truncated,
           keys: matches,
         });
       } catch (error) {
