@@ -41,7 +41,6 @@ export function jsonResponseArray<T>(
   itemsKey: string,
   wrapper: Record<string, unknown> = {},
   truncationHint?: string,
-  displayHint?: string,
 ): ArrayResponse {
   const hint = truncationHint ?? "Use pagination or filters to reduce results.";
   const skeleton = JSON.stringify({ ...wrapper, [itemsKey]: [], _meta: { included: 0, total: items.length, truncated: true, hint } });
@@ -59,12 +58,8 @@ export function jsonResponseArray<T>(
   const result: Record<string, unknown> = { ...wrapper, [itemsKey]: included };
   if (truncated) result._meta = { included: included.length, total, truncated, hint };
 
-  const content: Array<{ type: "text"; text: string }> = [];
-  if (displayHint) content.push({ type: "text", text: displayHint });
-  content.push({ type: "text", text: JSON.stringify(result) });
-
   return {
-    content,
+    content: [{ type: "text", text: JSON.stringify(result) }],
     _arrayMeta: { includedCount: included.length, totalCount: total, truncated },
   };
 }
