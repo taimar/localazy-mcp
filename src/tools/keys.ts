@@ -151,12 +151,12 @@ Examples:
           return { result, keys, next: output.next };
         };
 
-        const displayNote = "Show every translation value in full — do not truncate or summarize.";
+        const displayHint = "Show every translation value in full — do not truncate or summarize.";
         const page = await fetchPage(limit);
         const response = jsonResponseArray(
           page.keys, "keys",
-          { _display: displayNote, count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
-          hint,
+          { count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
+          hint, displayHint,
         );
 
         // If truncation occurred but the API had no more pages, re-fetch with
@@ -165,8 +165,8 @@ Examples:
           const retry = await fetchPage(response._arrayMeta.includedCount);
           return jsonResponseArray(
             retry.keys, "keys",
-            { _display: displayNote, count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
-            hint,
+            { count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
+            hint, displayHint,
           );
         }
 
@@ -312,10 +312,9 @@ Examples:
         return jsonResponseArray(
           matches,
           "keys",
-          {
-            _display: "Show every translation value in full — do not truncate or summarize.",
-            query, lang, count: matches.length, ...(truncated ? { truncated } : {}),
-          },
+          { query, lang, count: matches.length, ...(truncated ? { truncated } : {}) },
+          undefined,
+          "Show every translation value in full — do not truncate or summarize.",
         );
       } catch (error) {
         return errorResponse(handleError(error));
