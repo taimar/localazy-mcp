@@ -151,10 +151,11 @@ Examples:
           return { result, keys, next: output.next };
         };
 
+        const displayNote = "Show every translation value in full — do not truncate or summarize.";
         const page = await fetchPage(limit);
         const response = jsonResponseArray(
           page.keys, "keys",
-          { count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
+          { _display: displayNote, count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
           hint,
         );
 
@@ -164,7 +165,7 @@ Examples:
           const retry = await fetchPage(response._arrayMeta.includedCount);
           return jsonResponseArray(
             retry.keys, "keys",
-            { count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
+            { _display: displayNote, count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
             hint,
           );
         }
@@ -311,7 +312,10 @@ Examples:
         return jsonResponseArray(
           matches,
           "keys",
-          { query, lang, count: matches.length, ...(truncated ? { truncated } : {}) },
+          {
+            _display: "Show every translation value in full — do not truncate or summarize.",
+            query, lang, count: matches.length, ...(truncated ? { truncated } : {}),
+          },
         );
       } catch (error) {
         return errorResponse(handleError(error));
