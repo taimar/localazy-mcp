@@ -35,7 +35,7 @@ You can also add optional env variables to tune behavior:
 **Claude Code** — add the server to your project or global settings:
 
 ```bash
-claude mcp add localazy node dist/index.js --cwd /path/to/localazy-mcp -e LOCALAZY_API_TOKEN=<token>
+claude mcp add "Localazy" node dist/index.js --cwd /path/to/localazy-mcp -e LOCALAZY_API_TOKEN=<token>
 ```
 
 **Claude Desktop** — open Settings > MCP Servers and add the contents of your `.mcp.json`.
