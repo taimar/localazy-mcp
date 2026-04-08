@@ -4,8 +4,11 @@ import { TTLCache, cached, apiCache, invalidateProject } from "../src/lib/cache.
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
 import { jsonResponseArray } from "../src/lib/response.js";
+import { flattenTranslations } from "../src/lib/translations.js";
+import { findMatchedFields } from "../src/tools/find.js";
 import { translationsSchema } from "../src/tools/import.js";
 import { formatListKeysPageOutput } from "../src/tools/keys.js";
+import { detectTranslationIssues } from "../src/tools/quality.js";
 import { localazyLocaleSchema, localazyLocalesSchema } from "../src/types.js";
 
 test("translationsSchema accepts nested objects, plural maps, and string arrays", () => {
@@ -112,6 +115,97 @@ test("formatListKeysPageOutput omits key IDs when extra_info is false", () => {
       },
     ],
   });
+});
+
+test("flattenTranslations expands plural maps and arrays into addressable keys", () => {
+  const flattened = flattenTranslations([
+    {
+      id: "key-1",
+      key: ["common", "count"],
+      value: {
+        one: "1 item",
+        other: ["%d items", "many items"],
+      },
+    },
+  ]);
+
+  assert.deepEqual(flattened, [
+    { key: "common.count.one", text: "1 item" },
+    { key: "common.count.other[0]", text: "%d items" },
+    { key: "common.count.other[1]", text: "many items" },
+  ]);
+});
+
+test("detectTranslationIssues finds whitespace and punctuation problems", () => {
+  const findings = detectTranslationIssues(" Tere  ", "Hello!");
+
+  assert.deepEqual(findings, [
+    {
+      type: "leading_or_trailing_whitespace",
+      message: "Target has leading or trailing whitespace.",
+    },
+    {
+      type: "double_spaces",
+      message: "Target contains consecutive spaces.",
+    },
+    {
+      type: "terminal_punctuation_mismatch",
+      message: "Source ends with '!' but target ends with '(none)'.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues finds a space before punctuation", () => {
+  const findings = detectTranslationIssues("Tere !", "Hello!", "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "space_before_punctuation",
+      message: "Target has a space immediately before punctuation.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues allows French spacing before terminal punctuation", () => {
+  assert.deepEqual(detectTranslationIssues("Bonjour !", "Hello!", "fr"), []);
+  assert.deepEqual(detectTranslationIssues("Bonjour\u202F!", "Hello!", "fr"), []);
+});
+
+test("detectTranslationIssues still flags spaces before comma and period in French", () => {
+  const commaFindings = detectTranslationIssues("Bonjour ,", "Hello,", "fr");
+  const periodFindings = detectTranslationIssues("Bonjour .", "Hello.", "fr");
+
+  assert.deepEqual(commaFindings, [
+    {
+      type: "space_before_punctuation",
+      message: "Target has a space immediately before punctuation.",
+    },
+  ]);
+
+  assert.deepEqual(periodFindings, [
+    {
+      type: "space_before_punctuation",
+      message: "Target has a space immediately before punctuation.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues treats three dots and ellipsis as the same punctuation", () => {
+  const findings = detectTranslationIssues("Tere…", "Hello...");
+
+  assert.deepEqual(findings, []);
+});
+
+test("findMatchedFields reports whether the query matched key and target text", () => {
+  assert.deepEqual(
+    findMatchedFields("invoice", "billing.invoice.title", "Arve"),
+    ["key"]
+  );
+
+  assert.deepEqual(
+    findMatchedFields("arve", "billing.invoice.title", "Arve"),
+    ["target_value"]
+  );
 });
 
 test("handleError maps known HTTP status codes to friendly messages", () => {

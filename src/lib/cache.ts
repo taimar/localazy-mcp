@@ -42,6 +42,7 @@ export function invalidateProject(projectId: string): void {
   apiCache.delete(`files:${projectId}`);
   apiCache.delete(`languages:${projectId}`);
   apiCache.deleteByPrefix(`keys:${projectId}:`);
+  apiCache.deleteByPrefix(`keys-all:${projectId}:`);
 }
 
 /** In-flight requests for singleflight deduplication. */

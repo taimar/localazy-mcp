@@ -45,7 +45,10 @@ claude mcp add "Localazy" node dist/index.js --cwd /path/to/localazy-mcp -e LOCA
 Just talk to Claude about translations:
 
 - "What translation keys contain 'invoice'?"
+- "Find invoice-related keys in ET"
 - "Show me the Estonian translations"
+- "Check ET translations for punctuation issues and double spaces"
+- "Show checkout strings in Estonian"
 - "Import these translations: ..."
 Claude figures out project and file IDs automatically.
 
@@ -60,6 +63,8 @@ Claude figures out project and file IDs automatically.
 | `localazy_list_languages` | List languages with translation statistics |
 | `localazy_list_keys` | List translation keys with pagination and prefix filtering |
 | `localazy_search_keys` | Search keys by name or value across all files |
+| `localazy_find_translations` | Find matching translations in one call using the first accessible project |
+| `localazy_audit_translations` | Audit a language for punctuation, whitespace, and spacing issues in one call |
 
 ### Write
 
