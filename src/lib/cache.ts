@@ -32,7 +32,7 @@ export class TTLCache<T> {
   }
 }
 
-const CACHE_TTL = 10 * 60_000; // 10 minutes
+const CACHE_TTL = 15 * 60_000; // 15 minutes
 
 /** Shared cache instance for API responses. */
 export const apiCache = new TTLCache<unknown>();
