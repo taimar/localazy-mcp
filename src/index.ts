@@ -11,7 +11,7 @@ import { register as registerImport } from "./tools/import.js";
 const server = new McpServer(
   { name: "localazy-mcp-server", version: "1.0.0" },
   {
-    instructions: `Localazy translation management server. Use these tools when the user asks about translation keys, localized strings, languages, or localization files. Users may say "Localazy" to explicitly target this server. Always reproduce translation values exactly and completely as returned — never summarize, truncate, or cut off.`,
+    instructions: `Localazy translation management server. Use these tools when the user asks about translation keys, localized strings, languages, or localization files. Users may say "Localazy" to explicitly target this server. When showing Localazy translation results, always display every value in full. Never shorten, truncate, or use ellipsis for translation values.`,
   },
 );
 
