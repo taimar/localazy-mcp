@@ -6,7 +6,7 @@ import { handleError } from "../src/lib/errors.js";
 import { jsonResponseArray } from "../src/lib/response.js";
 import { flattenTranslations } from "../src/lib/translations.js";
 import { findMatchedFields } from "../src/tools/find.js";
-import { translationsSchema } from "../src/tools/import.js";
+import { normalizeTranslationsForImport, translationsSchema } from "../src/tools/import.js";
 import { formatListKeysPageOutput } from "../src/tools/keys.js";
 import { detectTranslationIssues } from "../src/tools/quality.js";
 import { localazyLocaleSchema, localazyLocalesSchema } from "../src/types.js";
@@ -48,6 +48,42 @@ test("translationsSchema rejects empty or malformed translation payloads", () =>
     const result = translationsSchema.safeParse(payload);
     assert.equal(result.success, false);
   }
+});
+
+test("normalizeTranslationsForImport expands flat dot-notation keys into nested objects", () => {
+  const normalized = normalizeTranslationsForImport({
+    en: {
+      "testimonials.innore": "Approved",
+      "common.count.one": "1 item",
+      "common.count.other": "%d items",
+    },
+  });
+
+  assert.deepEqual(normalized, {
+    en: {
+      testimonials: {
+        innore: "Approved",
+      },
+      common: {
+        count: {
+          one: "1 item",
+          other: "%d items",
+        },
+      },
+    },
+  });
+});
+
+test("normalizeTranslationsForImport rejects leaf and parent key conflicts", () => {
+  assert.throws(
+    () => normalizeTranslationsForImport({
+      en: {
+        testimonials: "Approved",
+        "testimonials.innore": "Reviewed",
+      },
+    }),
+    /Conflicting translation structure/
+  );
 });
 
 test("locale schemas accept valid locale codes and reject invalid ones", () => {

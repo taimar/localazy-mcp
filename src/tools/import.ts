@@ -25,6 +25,82 @@ export const translationsSchema: z.ZodType<Record<string, TranslationFile>> = z
     message: "At least one language must be provided",
   });
 
+function isTranslationObject(value: TranslationValue): value is TranslationFile {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeTranslationObjects(target: TranslationFile, incoming: TranslationFile, path: string): void {
+  for (const [key, value] of Object.entries(incoming)) {
+    const existing = target[key];
+    const nextPath = `${path}.${key}`;
+
+    if (existing === undefined) {
+      target[key] = value;
+      continue;
+    }
+
+    if (isTranslationObject(existing) && isTranslationObject(value)) {
+      mergeTranslationObjects(existing, value, nextPath);
+      continue;
+    }
+
+    throw new Error(`Conflicting translation structure at '${nextPath}'.`);
+  }
+}
+
+function normalizeTranslationFile(file: TranslationFile): TranslationFile {
+  const normalized: TranslationFile = {};
+  for (const [rawKey, rawValue] of Object.entries(file)) {
+    const parts = rawKey.split(".");
+    const normalizedValue = isTranslationObject(rawValue)
+      ? normalizeTranslationFile(rawValue)
+      : rawValue;
+    let cursor = normalized;
+
+    for (const part of parts.slice(0, -1)) {
+      const existing = cursor[part];
+
+      if (existing === undefined) {
+        const next: TranslationFile = {};
+        cursor[part] = next;
+        cursor = next;
+        continue;
+      }
+
+      if (!isTranslationObject(existing)) {
+        throw new Error(`Conflicting translation structure at '${rawKey}'.`);
+      }
+
+      cursor = existing;
+    }
+
+    const leafKey = parts[parts.length - 1]!;
+    const existing = cursor[leafKey];
+
+    if (existing === undefined) {
+      cursor[leafKey] = normalizedValue;
+      continue;
+    }
+
+    if (isTranslationObject(existing) && isTranslationObject(normalizedValue)) {
+      mergeTranslationObjects(existing, normalizedValue, rawKey);
+      continue;
+    }
+
+    throw new Error(`Conflicting translation structure at '${rawKey}'.`);
+  }
+
+  return normalized;
+}
+
+export function normalizeTranslationsForImport(
+  translations: Record<string, TranslationFile>
+): Record<string, TranslationFile> {
+  return Object.fromEntries(
+    Object.entries(translations).map(([lang, file]) => [lang, normalizeTranslationFile(file)])
+  );
+}
+
 export function register(server: McpServer): void {
   server.registerTool(
     "localazy_import_translations",
@@ -37,7 +113,8 @@ Accepts a JSON object mapping language codes to key-value translation pairs. Cre
 Args:
   - project_id (string): Project ID
   - translations (object): Translation data as { lang: { key: value } }
-    Values can be strings, string arrays, or nested objects like
+    Values can be strings, string arrays, flat dot-notation keys, or nested objects like
+    { "common.greeting": "Hello" } or
     { "common": { "greeting": "Hello" }, "items": ["One", "Two"] }
     Plural objects like { "one": "1 item", "other": "%d items" } are also supported
     Example: { "en": { "common": { "greeting": "Hello" } }, "de": { "common": { "greeting": "Hallo" } } }
@@ -57,7 +134,7 @@ Examples:
       inputSchema: {
         project_id: z.string().describe("Project ID"),
         translations: translationsSchema.describe(
-          'Translation data: { lang: { key: value } }. Supports nested objects and string arrays, for example { "en": { "common": { "greeting": "Hello" } } }'
+          'Translation data: { lang: { key: value } }. Supports flat dot-notation keys, nested objects, and string arrays, for example { "en": { "common.greeting": "Hello" } }'
         ),
         file_name: z
           .string()
@@ -98,9 +175,10 @@ Examples:
     }) => {
       try {
         const api = getClient();
+        const normalizedTranslations = normalizeTranslationsForImport(translations);
         const result = await withRetry(() => api.import.json({
           project: project_id,
-          json: translations,
+          json: normalizedTranslations,
           fileOptions: {
             name: file_name,
             ...(file_path ? { path: file_path } : {}),
