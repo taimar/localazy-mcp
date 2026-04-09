@@ -615,25 +615,12 @@ export function register(server: McpServer): void {
   };
 
   server.registerTool(
-    "localazy_audit",
-    {
-      title: "Audit",
-      description: `Audit a language for translation QA issues in one call.
-
-Use this for requests like "Audit ET translations", "Audit FR style", or "Audit ET syntax". It automatically uses the first accessible project, scans all files, compares against the project's source language, and returns matching issues for the requested scope.`,
-      inputSchema,
-      annotations,
-    },
-    async ({ lang, scope }) => auditTranslations(lang, scope)
-  );
-
-  server.registerTool(
     "localazy_audit_translations",
     {
       title: "Audit Translations",
-      description: `Legacy alias for localazy_audit.
+      description: `Audit a language for translation QA issues in one call.
 
-Use this when you need the older tool name. It supports the same scope values: 'all', 'style', and 'syntax'.`,
+Use this for requests like "Audit ET translations", "Audit FR style", or "Audit ET syntax". It automatically uses the first accessible project, scans all files, compares against the project's source language, and returns matching issues for the requested scope.`,
       inputSchema,
       annotations,
     },

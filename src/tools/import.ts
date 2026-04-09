@@ -103,10 +103,10 @@ export function normalizeTranslationsForImport(
 
 export function register(server: McpServer): void {
   server.registerTool(
-    "localazy_import_translations",
+    "localazy_upload_translations",
     {
-      title: "Import Translations",
-      description: `Import/upload translations to a Localazy project.
+      title: "Upload Translations",
+      description: `Upload translations to a Localazy project.
 
 Accepts a JSON object mapping language codes to key-value translation pairs. Creates or updates translation keys in the specified project.
 
@@ -120,12 +120,12 @@ Args:
     Example: { "en": { "common": { "greeting": "Hello" } }, "de": { "common": { "greeting": "Hallo" } } }
   - file_name (string): Target file name in Localazy (default: "import.json")
   - file_path (string): File path in Localazy (optional)
-  - force_current (boolean): Set imported translations as current version (default: false)
+  - force_current (boolean): Set uploaded translations as current version (default: false)
   - force_source (boolean): Overwrite source language content even if edited (default: false)
-  - import_as_new (boolean): All translations go through review (default: false)
+  - import_as_new (boolean): All uploaded translations go through review (default: false)
 
 Returns:
-  Import result with file ID and import batch ID.
+  Upload result with file ID and import batch ID.
 
 Examples:
   - Use when: "Upload these translations to Localazy"
@@ -147,7 +147,7 @@ Examples:
         force_current: z
           .boolean()
           .default(false)
-          .describe("Set imported translations as current version"),
+          .describe("Set uploaded translations as current version"),
         force_source: z
           .boolean()
           .default(false)
@@ -155,7 +155,7 @@ Examples:
         import_as_new: z
           .boolean()
           .default(false)
-          .describe("All translations go through review"),
+          .describe("All uploaded translations go through review"),
       },
       annotations: {
         readOnlyHint: false,
