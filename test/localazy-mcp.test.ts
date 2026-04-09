@@ -318,6 +318,209 @@ test("detectTranslationIssues flags invalid tag structure", () => {
   ]);
 });
 
+test("detectTranslationIssues flags ellipsis style", () => {
+  const findings = detectTranslationIssues("Tere...", "Hello...", "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "ellipsis_style",
+      message: "Target uses '...' instead of the ellipsis character '…'.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags straight apostrophes in contractions and possessives", () => {
+  assert.deepEqual(detectTranslationIssues("don't", undefined, "en"), [
+    {
+      type: "apostrophe_style",
+      message: "Use curly apostrophes (’) instead of straight apostrophes in contractions and possessives.",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("{{order_id}}'s status", undefined, "en"), [
+    {
+      type: "apostrophe_style",
+      message: "Use curly apostrophes (’) instead of straight apostrophes in contractions and possessives.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues does not flag quoted words as apostrophe style issues", () => {
+  assert.deepEqual(detectTranslationIssues("('Hello')", undefined, "en"), []);
+});
+
+test("detectTranslationIssues flags unbalanced quotation marks", () => {
+  const findings = detectTranslationIssues("\"Hello", undefined, "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "quote_balance",
+      message: "Target has unbalanced quotation marks.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags inner spacing in curly quotes", () => {
+  const findings = detectTranslationIssues("“ Hello ”", undefined, "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "quote_inner_spacing",
+      message: "Curly or directional quotes should not have spaces directly inside the quote marks.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues accepts balanced German-style quotes", () => {
+  const findings = detectTranslationIssues("„Hallo“", undefined, "de");
+
+  assert.deepEqual(findings, []);
+});
+
+test("detectTranslationIssues flags inner spacing in German-style quotes", () => {
+  const findings = detectTranslationIssues("„ Hallo “", undefined, "de");
+
+  assert.deepEqual(findings, [
+    {
+      type: "quote_inner_spacing",
+      message: "Curly or directional quotes should not have spaces directly inside the quote marks.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags non-guillemet French quote style", () => {
+  const findings = detectTranslationIssues("\"Bonjour\"", undefined, "fr");
+
+  assert.deepEqual(findings, [
+    {
+      type: "french_quote_style",
+      message: "French text should use guillemets (« ») instead of straight or curly double quotes.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags ASCII spaces inside French guillemets", () => {
+  const findings = detectTranslationIssues("« Bonjour »", undefined, "fr");
+
+  assert.deepEqual(findings, [
+    {
+      type: "french_guillemet_spacing",
+      message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags unsupported Unicode spaces inside French guillemets", () => {
+  assert.deepEqual(detectTranslationIssues("«\u2009Bonjour\u2009»", undefined, "fr"), [
+    {
+      type: "french_guillemet_spacing",
+      message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("«\u200ABonjour\u200A»", undefined, "fr"), [
+    {
+      type: "french_guillemet_spacing",
+      message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues accepts non-breaking spaces inside French guillemets", () => {
+  assert.deepEqual(detectTranslationIssues("«\u00A0Bonjour\u00A0»", undefined, "fr"), []);
+  assert.deepEqual(detectTranslationIssues("«\u202FBonjour\u202F»", undefined, "fr"), []);
+});
+
+test("detectTranslationIssues flags inner spacing in non-French guillemets", () => {
+  const findings = detectTranslationIssues("« Hello »", undefined, "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "quote_inner_spacing",
+      message: "Non-French guillemets should not have spaces directly inside the quote marks.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags dash style for ranges and spaced dashes", () => {
+  const findings = detectTranslationIssues("Range 1-2 - done", undefined, "en");
+
+  assert.deepEqual(findings, [
+    {
+      type: "dash_style",
+      message: "Use an en dash for numeric ranges (for example '1–2').",
+    },
+    {
+      type: "dash_style",
+      message: "Use an en dash for spaced dashes (for example ' – ').",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags spaced en dashes in numeric ranges", () => {
+  assert.deepEqual(detectTranslationIssues("Range 1 – 2", undefined, "en"), [
+    {
+      type: "dash_style",
+      message: "Use an en dash for numeric ranges (for example '1–2').",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("Range 1–2", undefined, "en"), []);
+});
+
+test("detectTranslationIssues flags unspaced em dash sentence style in non-French locales", () => {
+  const findings = detectTranslationIssues(
+    "tsink—ideaalne keermega või keerulise kujuga detailidele",
+    undefined,
+    "et"
+  );
+
+  assert.deepEqual(findings, [
+    {
+      type: "dash_style",
+      message: "Use a spaced en dash for sentence dashes (for example ' – ').",
+    },
+  ]);
+});
+
+test("detectTranslationIssues allows French em dash sentence style", () => {
+  assert.deepEqual(detectTranslationIssues("Bonjour — monde", undefined, "fr"), []);
+  assert.deepEqual(detectTranslationIssues("Bonjour\u2009—\u2009monde", undefined, "fr"), []);
+  assert.deepEqual(detectTranslationIssues("Bonjour—monde", undefined, "fr"), []);
+});
+
+test("detectTranslationIssues flags asymmetric em dash spacing", () => {
+  assert.deepEqual(detectTranslationIssues("Hello— world", undefined, "en"), [
+    {
+      type: "dash_style",
+      message: "Em dashes should have either spaces on both sides or no spaces on either side.",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("Bonjour —monde", undefined, "fr"), [
+    {
+      type: "dash_style",
+      message: "Em dashes should have either spaces on both sides or no spaces on either side.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags asymmetric em dash spacing with Unicode spaces", () => {
+  assert.deepEqual(detectTranslationIssues("Hello—\u2009world", undefined, "en"), [
+    {
+      type: "dash_style",
+      message: "Em dashes should have either spaces on both sides or no spaces on either side.",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("Bonjour\u200A—monde", undefined, "fr"), [
+    {
+      type: "dash_style",
+      message: "Em dashes should have either spaces on both sides or no spaces on either side.",
+    },
+  ]);
+});
+
 test("findMatchedFields reports whether the query matched key and target text", () => {
   assert.deepEqual(
     findMatchedFields("invoice", "billing.invoice.title", "Arve"),

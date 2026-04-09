@@ -20,15 +20,32 @@ const SPACE_BEFORE_PUNCTUATION_PATTERN = /([\s\u00A0\u202F]+)([!?:;,.])/gu;
 const FRENCH_ALLOWED_SPACED_PUNCTUATION = new Set(["!", "?", ":", ";"]);
 const PLACEHOLDER_PATTERN = /\{\{\s*([^{}]+?)\s*\}\}/gu;
 const TAG_PATTERN = /<\/?([A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\/?>/gu;
+const ASCII_ELLIPSIS_PATTERN = /\.{3}/u;
+const STRAIGHT_APOSTROPHE_PATTERN = /(?<=[\p{L}\p{N}\}])'(?=\p{L})/u;
+const FRENCH_NON_GUILLEMET_QUOTES_PATTERN = /["“”]/u;
+const CURLY_QUOTE_INNER_SPACE_PATTERN = /(?:“[\s\u00A0\u202F]|[\s\u00A0\u202F]”|„[\s\u00A0\u202F]|[\s\u00A0\u202F]“)/u;
+const NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN = /(?:«[\s\u00A0\u202F]|[\s\u00A0\u202F]»|»[\s\u00A0\u202F]|[\s\u00A0\u202F]«)/u;
+const NUMERIC_RANGE_SEGMENT_PATTERN = /\d+\s*[-–—]\s*\d+/gu;
+const NON_EN_DASH_RANGE_PATTERN = /\d+(?:\s*[-—]\s*|\s+–\s*|\s*–\s+)\d+/u;
+const NON_EN_DASH_SPACED_PATTERN = /\s(?:-|—)\s/u;
+const NON_FRENCH_UNSPACED_EM_DASH_PATTERN = /\S—\S/u;
+const WHITESPACE_CHARACTER_PATTERN = /\s/u;
 
 type IssueType =
+  | "apostrophe_style"
+  | "dash_style"
   | "double_spaces"
+  | "ellipsis_style"
   | "extra_placeholders"
   | "extra_tags"
+  | "french_guillemet_spacing"
+  | "french_quote_style"
   | "invalid_tag_structure"
   | "leading_or_trailing_whitespace"
   | "missing_placeholders"
   | "missing_tags"
+  | "quote_balance"
+  | "quote_inner_spacing"
   | "space_before_punctuation"
   | "terminal_punctuation_mismatch";
 
@@ -196,6 +213,152 @@ function analyzeTags(text: string): TagAnalysis {
   return { tokens, structureError: null };
 }
 
+function getStyleText(text: string): string {
+  return text.replace(TAG_PATTERN, "");
+}
+
+function isWhitespaceCharacter(char: string | undefined): boolean {
+  return char !== undefined && WHITESPACE_CHARACTER_PATTERN.test(char);
+}
+
+function isFrenchGuillemetSpace(char: string | undefined): boolean {
+  return char === "\u00A0" || char === "\u202F";
+}
+
+function hasInvalidFrenchGuillemetSpacing(text: string): boolean {
+  const chars = Array.from(text);
+
+  for (const [index, char] of chars.entries()) {
+    if (char === "«") {
+      const next = chars[index + 1];
+      if (isWhitespaceCharacter(next) && !isFrenchGuillemetSpace(next)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (char === "»") {
+      const previous = chars[index - 1];
+      if (isWhitespaceCharacter(previous) && !isFrenchGuillemetSpace(previous)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function hasMixedEmDashSpacing(text: string): boolean {
+  const chars = Array.from(text);
+
+  for (const [index, char] of chars.entries()) {
+    if (char !== "—") {
+      continue;
+    }
+
+    const hasLeftSpace = isWhitespaceCharacter(chars[index - 1]);
+    const hasRightSpace = isWhitespaceCharacter(chars[index + 1]);
+
+    if (hasLeftSpace !== hasRightSpace) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getQuoteBalanceIssue(text: string): string | null {
+  let straightDoubleQuoteCount = 0;
+  const stack: Array<"«" | "“" | "„"> = [];
+
+  for (const char of text) {
+    if (char === "\"") {
+      straightDoubleQuoteCount++;
+      continue;
+    }
+
+    if (char === "“") {
+      if (stack[stack.length - 1] === "„") {
+        stack.pop();
+      } else {
+        stack.push(char);
+      }
+      continue;
+    }
+
+    if (char === "«" || char === "„") {
+      stack.push(char);
+      continue;
+    }
+
+    if (char === "»") {
+      if (stack.pop() !== "«") {
+        return "Target has unbalanced quotation marks.";
+      }
+      continue;
+    }
+
+    if (char === "”") {
+      if (stack.pop() !== "“") {
+        return "Target has unbalanced quotation marks.";
+      }
+    }
+  }
+
+  if (straightDoubleQuoteCount % 2 !== 0 || stack.length > 0) {
+    return "Target has unbalanced quotation marks.";
+  }
+
+  return null;
+}
+
+function getDashStyleIssues(text: string, lang: string): Array<{ type: IssueType; message: string }> {
+  const issues: Array<{ type: IssueType; message: string }> = [];
+  const withoutRanges = text.replaceAll(NUMERIC_RANGE_SEGMENT_PATTERN, " ");
+
+  if (NON_EN_DASH_RANGE_PATTERN.test(text)) {
+    issues.push({
+      type: "dash_style",
+      message: "Use an en dash for numeric ranges (for example '1–2').",
+    });
+  }
+
+  if (!isFrenchLocale(lang) && NON_EN_DASH_SPACED_PATTERN.test(withoutRanges)) {
+    issues.push({
+      type: "dash_style",
+      message: "Use an en dash for spaced dashes (for example ' – ').",
+    });
+  }
+
+  if (!isFrenchLocale(lang) && NON_FRENCH_UNSPACED_EM_DASH_PATTERN.test(withoutRanges)) {
+    issues.push({
+      type: "dash_style",
+      message: "Use a spaced en dash for sentence dashes (for example ' – ').",
+    });
+  }
+
+  if (hasMixedEmDashSpacing(withoutRanges)) {
+    issues.push({
+      type: "dash_style",
+      message: "Em dashes should have either spaces on both sides or no spaces on either side.",
+    });
+  }
+
+  return issues;
+}
+
+function getQuoteInnerSpacingIssue(text: string, lang: string): string | null {
+  if (CURLY_QUOTE_INNER_SPACE_PATTERN.test(text)) {
+    return "Curly or directional quotes should not have spaces directly inside the quote marks.";
+  }
+
+  if (!isFrenchLocale(lang) && NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN.test(text)) {
+    return "Non-French guillemets should not have spaces directly inside the quote marks.";
+  }
+
+  return null;
+}
+
 export function detectTranslationIssues(
   targetText: string,
   sourceText: string | undefined,
@@ -203,6 +366,7 @@ export function detectTranslationIssues(
 ): Array<{ type: IssueType; message: string }> {
   const issues: Array<{ type: IssueType; message: string }> = [];
   const targetTagAnalysis = analyzeTags(targetText);
+  const styleText = getStyleText(targetText);
 
   if (targetText.trim() !== targetText) {
     issues.push({
@@ -224,6 +388,52 @@ export function detectTranslationIssues(
       message: "Target has a space immediately before punctuation.",
     });
   }
+
+  if (ASCII_ELLIPSIS_PATTERN.test(styleText)) {
+    issues.push({
+      type: "ellipsis_style",
+      message: "Target uses '...' instead of the ellipsis character '…'.",
+    });
+  }
+
+  if (STRAIGHT_APOSTROPHE_PATTERN.test(styleText)) {
+    issues.push({
+      type: "apostrophe_style",
+      message: "Use curly apostrophes (’) instead of straight apostrophes in contractions and possessives.",
+    });
+  }
+
+  const quoteBalanceIssue = getQuoteBalanceIssue(styleText);
+  if (quoteBalanceIssue) {
+    issues.push({
+      type: "quote_balance",
+      message: quoteBalanceIssue,
+    });
+  }
+
+  const quoteInnerSpacingIssue = getQuoteInnerSpacingIssue(styleText, lang);
+  if (quoteInnerSpacingIssue) {
+    issues.push({
+      type: "quote_inner_spacing",
+      message: quoteInnerSpacingIssue,
+    });
+  }
+
+  if (isFrenchLocale(lang) && FRENCH_NON_GUILLEMET_QUOTES_PATTERN.test(styleText)) {
+    issues.push({
+      type: "french_quote_style",
+      message: "French text should use guillemets (« ») instead of straight or curly double quotes.",
+    });
+  }
+
+  if (isFrenchLocale(lang) && hasInvalidFrenchGuillemetSpacing(styleText)) {
+    issues.push({
+      type: "french_guillemet_spacing",
+      message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",
+    });
+  }
+
+  issues.push(...getDashStyleIssues(styleText, lang));
 
   if (sourceText !== undefined) {
     const sourcePunctuation = normalizeTerminalPunctuation(sourceText);
@@ -297,13 +507,20 @@ Use this for requests like "Check ET translations for punctuation issues and dou
         const sourceLang = getSourceLang(project);
 
         const countsByType: Record<IssueType, number> = {
+          apostrophe_style: 0,
+          dash_style: 0,
           double_spaces: 0,
+          ellipsis_style: 0,
           extra_placeholders: 0,
           extra_tags: 0,
+          french_guillemet_spacing: 0,
+          french_quote_style: 0,
           invalid_tag_structure: 0,
           leading_or_trailing_whitespace: 0,
           missing_placeholders: 0,
           missing_tags: 0,
+          quote_balance: 0,
+          quote_inner_spacing: 0,
           space_before_punctuation: 0,
           terminal_punctuation_mismatch: 0,
         };
