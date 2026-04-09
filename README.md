@@ -47,10 +47,12 @@ Just talk to Claude about translations:
 - "What translation keys contain 'invoice'?"
 - "Find invoice-related keys in ET"
 - "Show me the Estonian translations"
-- "Check ET translations for punctuation issues and double spaces"
+- "Audit ET translations"
+- "Audit ET style"
+- "Audit FR syntax"
 - "Show checkout strings in Estonian"
 - "Import these translations: ..."
-Claude figures out project and file IDs automatically.
+The workflow tools automatically use the first accessible project and infer file IDs when possible.
 
 ## Available tools
 
@@ -64,13 +66,13 @@ Claude figures out project and file IDs automatically.
 | `localazy_list_keys` | List translation keys with pagination and prefix filtering |
 | `localazy_search_keys` | Search keys by name or value across all files |
 | `localazy_find_translations` | Find matching translations in one call using the first accessible project |
-| `localazy_audit_translations` | Audit a language for punctuation, whitespace, and spacing issues in one call |
+| `localazy_audit` | Audit a language for translation QA issues with `scope=all`, `style` (punctuation, quotes, dashes, apostrophes, spacing), or `syntax` (placeholders, tags, broken tag structure) |
 
 ### Write
 
 | Tool | Description |
 |------|-------------|
-| `localazy_import_translations` | Import/upload translations |
+| `localazy_import_translations` | Import/upload translations from nested JSON or flat dot-notation keys |
 
 ## Development
 

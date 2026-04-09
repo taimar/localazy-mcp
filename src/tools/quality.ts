@@ -49,6 +49,8 @@ type IssueType =
   | "space_before_punctuation"
   | "terminal_punctuation_mismatch";
 
+type AuditScope = "all" | "style" | "syntax";
+
 type AuditIssue = {
   type: IssueType;
   file: string;
@@ -57,6 +59,27 @@ type AuditIssue = {
   message: string;
   target_value: string;
   source_value?: string;
+};
+
+const auditScopeSchema = z.enum(["all", "style", "syntax"]);
+
+const ISSUE_SCOPE: Record<IssueType, Exclude<AuditScope, "all">> = {
+  apostrophe_style: "style",
+  dash_style: "style",
+  double_spaces: "style",
+  ellipsis_style: "style",
+  extra_placeholders: "syntax",
+  extra_tags: "syntax",
+  french_guillemet_spacing: "style",
+  french_quote_style: "style",
+  invalid_tag_structure: "syntax",
+  leading_or_trailing_whitespace: "style",
+  missing_placeholders: "syntax",
+  missing_tags: "syntax",
+  quote_balance: "style",
+  quote_inner_spacing: "style",
+  space_before_punctuation: "style",
+  terminal_punctuation_mismatch: "style",
 };
 
 function normalizeTerminalPunctuation(text?: string): string {
@@ -359,6 +382,31 @@ function getQuoteInnerSpacingIssue(text: string, lang: string): string | null {
   return null;
 }
 
+function matchesAuditScope(type: IssueType, scope: AuditScope): boolean {
+  return scope === "all" || ISSUE_SCOPE[type] === scope;
+}
+
+function createIssueCounts(): Record<IssueType, number> {
+  return {
+    apostrophe_style: 0,
+    dash_style: 0,
+    double_spaces: 0,
+    ellipsis_style: 0,
+    extra_placeholders: 0,
+    extra_tags: 0,
+    french_guillemet_spacing: 0,
+    french_quote_style: 0,
+    invalid_tag_structure: 0,
+    leading_or_trailing_whitespace: 0,
+    missing_placeholders: 0,
+    missing_tags: 0,
+    quote_balance: 0,
+    quote_inner_spacing: 0,
+    space_before_punctuation: 0,
+    terminal_punctuation_mismatch: 0,
+  };
+}
+
 export function detectTranslationIssues(
   targetText: string,
   sourceText: string | undefined,
@@ -480,107 +528,115 @@ export function detectTranslationIssues(
   return issues;
 }
 
+async function auditTranslations(lang: string, scope: AuditScope) {
+  try {
+    const project = await resolveProject();
+    const files = await resolveFiles(project.id);
+    const sourceLang = getSourceLang(project);
+    const countsByType = createIssueCounts();
+    const issues: AuditIssue[] = [];
+    let issueCount = 0;
+    let scannedValueCount = 0;
+
+    for (const file of files) {
+      const targetKeys = await listAllKeys(project.id, file.id, lang);
+      const sourceKeys = sourceLang === lang
+        ? targetKeys
+        : await listAllKeys(project.id, file.id, sourceLang);
+      const sourceMap = new Map(
+        flattenTranslations(sourceKeys).map((entry) => [entry.key, entry.text])
+      );
+
+      for (const entry of flattenTranslations(targetKeys)) {
+        scannedValueCount++;
+
+        for (const issue of detectTranslationIssues(entry.text, sourceMap.get(entry.key), lang)) {
+          if (!matchesAuditScope(issue.type, scope)) {
+            continue;
+          }
+
+          countsByType[issue.type]++;
+          issueCount++;
+
+          if (issues.length < MAX_RETURNED_ISSUES) {
+            issues.push({
+              type: issue.type,
+              file: formatFileLabel(file),
+              file_id: file.id,
+              key: entry.key,
+              message: issue.message,
+              target_value: entry.text,
+              ...(sourceMap.has(entry.key)
+                ? { source_value: sourceMap.get(entry.key) }
+                : {}),
+            });
+          }
+        }
+      }
+    }
+
+    return jsonResponseArray(
+      issues,
+      "issues",
+      {
+        project_id: project.id,
+        project_name: project.name,
+        lang,
+        scope,
+        source_lang: sourceLang,
+        file_count: files.length,
+        scanned_value_count: scannedValueCount,
+        issue_count: issueCount,
+        counts_by_type: countsByType,
+        returned_count: issues.length,
+        limited: issueCount > issues.length,
+      },
+      `Response contains the first ${MAX_RETURNED_ISSUES} issues. Inspect files manually if you need the full list.`
+    );
+  } catch (error) {
+    return errorResponse(handleError(error));
+  }
+}
+
 export function register(server: McpServer): void {
+  const inputSchema = {
+    lang: localazyLocaleSchema
+      .default("en")
+      .describe("Valid Localazy language code to inspect, for example 'et'"),
+    scope: auditScopeSchema
+      .default("all")
+      .describe("Which rules to audit: 'all', 'style', or 'syntax'"),
+  };
+  const annotations = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  };
+
+  server.registerTool(
+    "localazy_audit",
+    {
+      title: "Audit",
+      description: `Audit a language for translation QA issues in one call.
+
+Use this for requests like "Audit ET translations", "Audit FR style", or "Audit ET syntax". It automatically uses the first accessible project, scans all files, compares against the project's source language, and returns matching issues for the requested scope.`,
+      inputSchema,
+      annotations,
+    },
+    async ({ lang, scope }) => auditTranslations(lang, scope)
+  );
+
   server.registerTool(
     "localazy_audit_translations",
     {
       title: "Audit Translations",
-      description: `Audit a language for common QA issues in one call.
+      description: `Legacy alias for localazy_audit.
 
-Use this for requests like "Check ET translations for punctuation issues and double spaces". It automatically uses the first accessible project, scans all files, compares against the project's source language, and returns matching issues.`,
-      inputSchema: {
-        lang: localazyLocaleSchema
-          .default("en")
-          .describe("Valid Localazy language code to inspect, for example 'et'"),
-      },
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+Use this when you need the older tool name. It supports the same scope values: 'all', 'style', and 'syntax'.`,
+      inputSchema,
+      annotations,
     },
-    async ({ lang }) => {
-      try {
-        const project = await resolveProject();
-        const files = await resolveFiles(project.id);
-        const sourceLang = getSourceLang(project);
-
-        const countsByType: Record<IssueType, number> = {
-          apostrophe_style: 0,
-          dash_style: 0,
-          double_spaces: 0,
-          ellipsis_style: 0,
-          extra_placeholders: 0,
-          extra_tags: 0,
-          french_guillemet_spacing: 0,
-          french_quote_style: 0,
-          invalid_tag_structure: 0,
-          leading_or_trailing_whitespace: 0,
-          missing_placeholders: 0,
-          missing_tags: 0,
-          quote_balance: 0,
-          quote_inner_spacing: 0,
-          space_before_punctuation: 0,
-          terminal_punctuation_mismatch: 0,
-        };
-        const issues: AuditIssue[] = [];
-        let issueCount = 0;
-        let scannedValueCount = 0;
-
-        for (const file of files) {
-          const targetKeys = await listAllKeys(project.id, file.id, lang);
-          const sourceKeys = sourceLang === lang
-            ? targetKeys
-            : await listAllKeys(project.id, file.id, sourceLang);
-          const sourceMap = new Map(
-            flattenTranslations(sourceKeys).map((entry) => [entry.key, entry.text])
-          );
-
-          for (const entry of flattenTranslations(targetKeys)) {
-            scannedValueCount++;
-
-            for (const issue of detectTranslationIssues(entry.text, sourceMap.get(entry.key), lang)) {
-              countsByType[issue.type]++;
-              issueCount++;
-
-              if (issues.length < MAX_RETURNED_ISSUES) {
-                issues.push({
-                  type: issue.type,
-                  file: formatFileLabel(file),
-                  file_id: file.id,
-                  key: entry.key,
-                  message: issue.message,
-                  target_value: entry.text,
-                  ...(sourceMap.has(entry.key)
-                    ? { source_value: sourceMap.get(entry.key) }
-                    : {}),
-                });
-              }
-            }
-          }
-        }
-
-        return jsonResponseArray(
-          issues,
-          "issues",
-          {
-            project_id: project.id,
-            project_name: project.name,
-            lang,
-            source_lang: sourceLang,
-            file_count: files.length,
-            scanned_value_count: scannedValueCount,
-            issue_count: issueCount,
-            counts_by_type: countsByType,
-            returned_count: issues.length,
-            limited: issueCount > issues.length,
-          },
-          `Response contains the first ${MAX_RETURNED_ISSUES} issues. Inspect files manually if you need the full list.`
-        );
-      } catch (error) {
-        return errorResponse(handleError(error));
-      }
-    }
+    async ({ lang, scope }) => auditTranslations(lang, scope)
   );
 }
