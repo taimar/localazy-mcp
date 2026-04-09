@@ -53,7 +53,7 @@ test("translationsSchema rejects empty or malformed translation payloads", () =>
 test("normalizeTranslationsForImport expands flat dot-notation keys into nested objects", () => {
   const normalized = normalizeTranslationsForImport({
     en: {
-      "testimonials.innore": "Approved",
+      "messages.welcome": "Welcome",
       "common.count.one": "1 item",
       "common.count.other": "%d items",
     },
@@ -61,8 +61,8 @@ test("normalizeTranslationsForImport expands flat dot-notation keys into nested 
 
   assert.deepEqual(normalized, {
     en: {
-      testimonials: {
-        innore: "Approved",
+      messages: {
+        welcome: "Welcome",
       },
       common: {
         count: {
@@ -78,8 +78,8 @@ test("normalizeTranslationsForImport rejects leaf and parent key conflicts", () 
   assert.throws(
     () => normalizeTranslationsForImport({
       en: {
-        testimonials: "Approved",
-        "testimonials.innore": "Reviewed",
+        messages: "Welcome",
+        "messages.welcome": "Reviewed",
       },
     }),
     /Conflicting translation structure/
