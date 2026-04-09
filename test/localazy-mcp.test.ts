@@ -232,6 +232,92 @@ test("detectTranslationIssues treats three dots and ellipsis as the same punctua
   assert.deepEqual(findings, []);
 });
 
+test("detectTranslationIssues flags missing and extra placeholders", () => {
+  const findings = detectTranslationIssues(
+    "Delivery {{shipment_number}}/{{shipment_total}} of order #{{order_id}} has shipped.",
+    "Delivery {{shipment_number}}/{{shipment_count}} of order #{{order_id}} has shipped.",
+    "en"
+  );
+
+  assert.deepEqual(findings, [
+    {
+      type: "missing_placeholders",
+      message: "Target is missing placeholders: {{shipment_count}}.",
+    },
+    {
+      type: "extra_placeholders",
+      message: "Target has extra placeholders: {{shipment_total}}.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues flags missing tags", () => {
+  const findings = detectTranslationIssues(
+    "Click Save to continue.",
+    "Click <strong>Save</strong> to continue.",
+    "en"
+  );
+
+  assert.deepEqual(findings, [
+    {
+      type: "missing_tags",
+      message: "Target is missing tags: <strong>.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues detects punctuation before closing tags", () => {
+  const findings = detectTranslationIssues(
+    "<2><0>Expected delivery date is {{expected_delivery}}!</0></2>",
+    "<2><0>Expected delivery date is {{expected_delivery}}.</0></2>",
+    "en"
+  );
+
+  assert.deepEqual(findings, [
+    {
+      type: "terminal_punctuation_mismatch",
+      message: "Source ends with '.' but target ends with '!'.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues detects punctuation before trailing self-closing tags", () => {
+  assert.deepEqual(
+    detectTranslationIssues("<p>Hello!</p><br/>", "<p>Hello.</p><br/>", "en"),
+    [
+      {
+        type: "terminal_punctuation_mismatch",
+        message: "Source ends with '.' but target ends with '!'.",
+      },
+    ]
+  );
+
+  assert.deepEqual(
+    detectTranslationIssues("<p>Hello!</p><br />", "<p>Hello.</p><br />", "en"),
+    [
+      {
+        type: "terminal_punctuation_mismatch",
+        message: "Source ends with '.' but target ends with '!'.",
+      },
+    ]
+  );
+});
+
+test("detectTranslationIssues flags invalid tag structure", () => {
+  const findings = detectTranslationIssues(
+    "<p><b>Job:</p></b>",
+    "<p><b>Job:</b></p>",
+    "en"
+  );
+
+  assert.deepEqual(findings, [
+    {
+      type: "invalid_tag_structure",
+      message: "Target has invalid tag structure: expected </b> but found </p>.",
+    },
+  ]);
+});
+
 test("findMatchedFields reports whether the query matched key and target text", () => {
   assert.deepEqual(
     findMatchedFields("invoice", "billing.invoice.title", "Arve"),

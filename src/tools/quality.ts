@@ -14,13 +14,21 @@ import { localazyLocaleSchema } from "../types.js";
 
 const MAX_RETURNED_ISSUES = 200;
 const TRAILING_CLOSERS_PATTERN = /[)\]"'»”’]+$/u;
+const TRAILING_TAG_PATTERN = /(?:<\/(?:[A-Za-z][A-Za-z0-9-]*|\d+)>|<(?:[A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\s*\/>)\s*$/u;
 const TERMINAL_PUNCTUATION_PATTERN = /([.!?:;…]+)$/u;
 const SPACE_BEFORE_PUNCTUATION_PATTERN = /([\s\u00A0\u202F]+)([!?:;,.])/gu;
 const FRENCH_ALLOWED_SPACED_PUNCTUATION = new Set(["!", "?", ":", ";"]);
+const PLACEHOLDER_PATTERN = /\{\{\s*([^{}]+?)\s*\}\}/gu;
+const TAG_PATTERN = /<\/?([A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\/?>/gu;
 
 type IssueType =
   | "double_spaces"
+  | "extra_placeholders"
+  | "extra_tags"
+  | "invalid_tag_structure"
   | "leading_or_trailing_whitespace"
+  | "missing_placeholders"
+  | "missing_tags"
   | "space_before_punctuation"
   | "terminal_punctuation_mismatch";
 
@@ -37,8 +45,22 @@ type AuditIssue = {
 function normalizeTerminalPunctuation(text?: string): string {
   if (!text) return "";
 
-  const withoutClosers = text.trim().replace(TRAILING_CLOSERS_PATTERN, "");
-  const match = withoutClosers.match(TERMINAL_PUNCTUATION_PATTERN);
+  let visibleTail = text.trim();
+
+  while (true) {
+    const stripped = visibleTail
+      .replace(TRAILING_CLOSERS_PATTERN, "")
+      .replace(TRAILING_TAG_PATTERN, "")
+      .trimEnd();
+
+    if (stripped === visibleTail) {
+      break;
+    }
+
+    visibleTail = stripped;
+  }
+
+  const match = visibleTail.match(TERMINAL_PUNCTUATION_PATTERN);
   return match ? match[1].replace(/\.{3}/g, "…") : "";
 }
 
@@ -58,12 +80,129 @@ function hasInvalidSpaceBeforePunctuation(targetText: string, lang: string): boo
   return false;
 }
 
+function extractPlaceholders(text: string): string[] {
+  return Array.from(text.matchAll(PLACEHOLDER_PATTERN), (match) => `{{${match[1]!.trim()}}}`);
+}
+
+function countTokens(tokens: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  for (const token of tokens) {
+    counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+
+  return counts;
+}
+
+function diffTokenCounts(
+  sourceCounts: Map<string, number>,
+  targetCounts: Map<string, number>,
+): Array<{ token: string; count: number }> {
+  const diff: Array<{ token: string; count: number }> = [];
+
+  for (const [token, sourceCount] of sourceCounts) {
+    const count = sourceCount - (targetCounts.get(token) ?? 0);
+    if (count > 0) {
+      diff.push({ token, count });
+    }
+  }
+
+  return diff.sort((a, b) => a.token.localeCompare(b.token));
+}
+
+function formatTokenList(items: Array<{ token: string; count: number }>): string {
+  return items
+    .map(({ token, count }) => count === 1 ? token : `${token} x${count}`)
+    .join(", ");
+}
+
+function pushTokenDiffIssues(
+  issues: Array<{ type: IssueType; message: string }>,
+  sourceTokens: string[],
+  targetTokens: string[],
+  missingType: "missing_placeholders" | "missing_tags",
+  extraType: "extra_placeholders" | "extra_tags",
+  label: "placeholders" | "tags",
+): void {
+  const sourceCounts = countTokens(sourceTokens);
+  const targetCounts = countTokens(targetTokens);
+  const missingTokens = diffTokenCounts(sourceCounts, targetCounts);
+  const extraTokens = diffTokenCounts(targetCounts, sourceCounts);
+
+  if (missingTokens.length > 0) {
+    issues.push({
+      type: missingType,
+      message: `Target is missing ${label}: ${formatTokenList(missingTokens)}.`,
+    });
+  }
+
+  if (extraTokens.length > 0) {
+    issues.push({
+      type: extraType,
+      message: `Target has extra ${label}: ${formatTokenList(extraTokens)}.`,
+    });
+  }
+}
+
+type TagAnalysis = {
+  tokens: string[];
+  structureError: string | null;
+};
+
+function analyzeTags(text: string): TagAnalysis {
+  const tokens: string[] = [];
+  const stack: string[] = [];
+
+  for (const match of text.matchAll(TAG_PATTERN)) {
+    const raw = match[0]!;
+    const name = match[1]!;
+    const isClosingTag = raw.startsWith("</");
+    const isSelfClosingTag = raw.endsWith("/>");
+
+    if (isClosingTag) {
+      const expected = stack.pop();
+
+      if (expected === undefined) {
+        return {
+          tokens,
+          structureError: `Target has invalid tag structure: unexpected closing tag </${name}>.`,
+        };
+      }
+
+      if (expected !== name) {
+        return {
+          tokens,
+          structureError: `Target has invalid tag structure: expected </${expected}> but found </${name}>.`,
+        };
+      }
+
+      continue;
+    }
+
+    tokens.push(isSelfClosingTag ? `<${name}/>` : `<${name}>`);
+
+    if (!isSelfClosingTag) {
+      stack.push(name);
+    }
+  }
+
+  if (stack.length > 0) {
+    return {
+      tokens,
+      structureError: `Target has invalid tag structure: missing closing tag for <${stack[stack.length - 1]!}>.`,
+    };
+  }
+
+  return { tokens, structureError: null };
+}
+
 export function detectTranslationIssues(
   targetText: string,
   sourceText: string | undefined,
   lang = "en",
 ): Array<{ type: IssueType; message: string }> {
   const issues: Array<{ type: IssueType; message: string }> = [];
+  const targetTagAnalysis = analyzeTags(targetText);
 
   if (targetText.trim() !== targetText) {
     issues.push({
@@ -89,6 +228,7 @@ export function detectTranslationIssues(
   if (sourceText !== undefined) {
     const sourcePunctuation = normalizeTerminalPunctuation(sourceText);
     const targetPunctuation = normalizeTerminalPunctuation(targetText);
+    const sourceTagAnalysis = analyzeTags(sourceText);
 
     if ((sourcePunctuation || targetPunctuation) && sourcePunctuation !== targetPunctuation) {
       issues.push({
@@ -96,6 +236,35 @@ export function detectTranslationIssues(
         message: `Source ends with '${sourcePunctuation || "(none)"}' but target ends with '${targetPunctuation || "(none)"}'.`,
       });
     }
+
+    pushTokenDiffIssues(
+      issues,
+      extractPlaceholders(sourceText),
+      extractPlaceholders(targetText),
+      "missing_placeholders",
+      "extra_placeholders",
+      "placeholders",
+    );
+    pushTokenDiffIssues(
+      issues,
+      sourceTagAnalysis.tokens,
+      targetTagAnalysis.tokens,
+      "missing_tags",
+      "extra_tags",
+      "tags",
+    );
+
+    if (targetTagAnalysis.structureError) {
+      issues.push({
+        type: "invalid_tag_structure",
+        message: targetTagAnalysis.structureError,
+      });
+    }
+  } else if (targetTagAnalysis.structureError) {
+    issues.push({
+      type: "invalid_tag_structure",
+      message: targetTagAnalysis.structureError,
+    });
   }
 
   return issues;
@@ -129,7 +298,12 @@ Use this for requests like "Check ET translations for punctuation issues and dou
 
         const countsByType: Record<IssueType, number> = {
           double_spaces: 0,
+          extra_placeholders: 0,
+          extra_tags: 0,
+          invalid_tag_structure: 0,
           leading_or_trailing_whitespace: 0,
+          missing_placeholders: 0,
+          missing_tags: 0,
           space_before_punctuation: 0,
           terminal_punctuation_mismatch: 0,
         };
