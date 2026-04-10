@@ -25,6 +25,7 @@ const STRAIGHT_APOSTROPHE_PATTERN = /(?<=[\p{L}\p{N}\}])'(?=\p{L})/u;
 const FRENCH_NON_GUILLEMET_QUOTES_PATTERN = /["“”]/u;
 const CURLY_QUOTE_INNER_SPACE_PATTERN = /(?:“[\s\u00A0\u202F]|[\s\u00A0\u202F]”|„[\s\u00A0\u202F]|[\s\u00A0\u202F]“)/u;
 const NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN = /(?:«[\s\u00A0\u202F]|[\s\u00A0\u202F]»|»[\s\u00A0\u202F]|[\s\u00A0\u202F]«)/u;
+const PARENTHESIS_INNER_SPACE_PATTERN = /(?:\(\s|\s\))/u;
 const NUMERIC_RANGE_SEGMENT_PATTERN = /\d+\s*[-–—]\s*\d+/gu;
 const NON_EN_DASH_RANGE_PATTERN = /\d+(?:\s*[-—]\s*|\s+–\s*|\s*–\s+)\d+/u;
 const NON_EN_DASH_SPACED_PATTERN = /\s(?:-|—)\s/u;
@@ -44,6 +45,7 @@ type IssueType =
   | "leading_or_trailing_whitespace"
   | "missing_placeholders"
   | "missing_tags"
+  | "parenthesis_inner_spacing"
   | "quote_balance"
   | "quote_inner_spacing"
   | "space_before_punctuation"
@@ -76,6 +78,7 @@ const ISSUE_SCOPE: Record<IssueType, Exclude<AuditScope, "all">> = {
   leading_or_trailing_whitespace: "style",
   missing_placeholders: "syntax",
   missing_tags: "syntax",
+  parenthesis_inner_spacing: "style",
   quote_balance: "style",
   quote_inner_spacing: "style",
   space_before_punctuation: "style",
@@ -382,6 +385,14 @@ function getQuoteInnerSpacingIssue(text: string, lang: string): string | null {
   return null;
 }
 
+function getParenthesisInnerSpacingIssue(text: string): string | null {
+  if (PARENTHESIS_INNER_SPACE_PATTERN.test(text)) {
+    return "Parentheses should not have spaces directly inside them.";
+  }
+
+  return null;
+}
+
 function matchesAuditScope(type: IssueType, scope: AuditScope): boolean {
   return scope === "all" || ISSUE_SCOPE[type] === scope;
 }
@@ -400,6 +411,7 @@ function createIssueCounts(): Record<IssueType, number> {
     leading_or_trailing_whitespace: 0,
     missing_placeholders: 0,
     missing_tags: 0,
+    parenthesis_inner_spacing: 0,
     quote_balance: 0,
     quote_inner_spacing: 0,
     space_before_punctuation: 0,
@@ -464,6 +476,14 @@ export function detectTranslationIssues(
     issues.push({
       type: "quote_inner_spacing",
       message: quoteInnerSpacingIssue,
+    });
+  }
+
+  const parenthesisInnerSpacingIssue = getParenthesisInnerSpacingIssue(styleText);
+  if (parenthesisInnerSpacingIssue) {
+    issues.push({
+      type: "parenthesis_inner_spacing",
+      message: parenthesisInnerSpacingIssue,
     });
   }
 

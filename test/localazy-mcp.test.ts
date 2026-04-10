@@ -388,6 +388,17 @@ test("detectTranslationIssues flags inner spacing in German-style quotes", () =>
   ]);
 });
 
+test("detectTranslationIssues flags inner spacing in parentheses", () => {
+  assert.deepEqual(detectTranslationIssues("( hello )", undefined, "en"), [
+    {
+      type: "parenthesis_inner_spacing",
+      message: "Parentheses should not have spaces directly inside them.",
+    },
+  ]);
+
+  assert.deepEqual(detectTranslationIssues("(hello)", undefined, "en"), []);
+});
+
 test("detectTranslationIssues flags non-guillemet French quote style", () => {
   const findings = detectTranslationIssues("\"Bonjour\"", undefined, "fr");
 
