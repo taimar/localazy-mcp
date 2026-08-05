@@ -22,12 +22,6 @@ export const localazyLocaleSchema = z
     message: INVALID_LOCALE_MESSAGE,
   });
 
-export const localazyLocalesSchema = z.array(localazyLocaleSchema);
-
 export function asLocale(lang: string): LocalazyLocale {
   return lang as LocalazyLocale;
-}
-
-export function asLocales(langs: string[]): LocalazyLocale[] {
-  return langs as LocalazyLocale[];
 }

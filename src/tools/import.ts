@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { invalidateProject } from "../lib/cache.js";
+import { invalidateCache } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
 import { withRetry } from "../lib/retry.js";
+import { resolveProject } from "../lib/translations.js";
 
 type TranslationValue = string | string[] | { [key: string]: TranslationValue };
 type TranslationFile = Record<string, TranslationValue>;
@@ -106,35 +107,12 @@ export function register(server: McpServer): void {
     "localazy_upload_translations",
     {
       title: "Upload Translations",
-      description: `Upload translations to a Localazy project.
+      description: `Create or update translation keys in a Localazy project. Returns the file ID and import batch ID.
 
-Accepts a JSON object mapping language codes to key-value translation pairs. Creates or updates translation keys in the specified project.
-
-Args:
-  - project_id (string): Project ID
-  - translations (object): Translation data as { lang: { key: value } }
-    Values can be strings, string arrays, flat dot-notation keys, or nested objects like
-    { "common.greeting": "Hello" } or
-    { "common": { "greeting": "Hello" }, "items": ["One", "Two"] }
-    Plural objects like { "one": "1 item", "other": "%d items" } are also supported
-    Example: { "en": { "common": { "greeting": "Hello" } }, "de": { "common": { "greeting": "Hallo" } } }
-  - file_name (string): Target file name in Localazy (default: "import.json")
-  - file_path (string): File path in Localazy (optional)
-  - force_current (boolean): Set uploaded translations as current version (default: false)
-  - force_source (boolean): Overwrite source language content even if edited (default: false)
-  - import_as_new (boolean): All uploaded translations go through review (default: false)
-
-Returns:
-  Upload result with file ID and import batch ID.
-
-Examples:
-  - Use when: "Upload these translations to Localazy"
-  - Use when: "Add German translations for the greeting key"
-  - Don't use when: You need to delete keys (use Localazy web UI)`,
+Cannot delete keys — that requires the Localazy web UI.`,
       inputSchema: {
-        project_id: z.string().describe("Project ID"),
         translations: translationsSchema.describe(
-          'Translation data: { lang: { key: value } }. Supports flat dot-notation keys, nested objects, and string arrays, for example { "en": { "common.greeting": "Hello" } }'
+          'Translation data as { lang: { key: value } }. Keys may be flat dot-notation or nested; values may be strings, string arrays, or plural maps like { "one": "1 item", "other": "%d items" }. Example: { "en": { "common.greeting": "Hello" }, "de": { "common": { "greeting": "Hallo" } } }'
         ),
         file_name: z
           .string()
@@ -165,7 +143,6 @@ Examples:
       },
     },
     async ({
-      project_id,
       translations,
       file_name,
       file_path,
@@ -175,9 +152,10 @@ Examples:
     }) => {
       try {
         const api = getClient();
+        const project = await resolveProject();
         const normalizedTranslations = normalizeTranslationsForImport(translations);
         const result = await withRetry(() => api.import.json({
-          project: project_id,
+          project: project.id,
           json: normalizedTranslations,
           fileOptions: {
             name: file_name,
@@ -190,7 +168,7 @@ Examples:
           },
         }));
 
-        invalidateProject(project_id);
+        invalidateCache();
         return jsonResponse(result);
       } catch (error) {
         return errorResponse(handleError(error));

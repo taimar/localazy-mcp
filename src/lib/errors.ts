@@ -23,7 +23,7 @@ export function handleError(error: unknown): string {
       return "Error: Permission denied. Your token may not have access to this resource.";
     }
     if (statusCode === 404) {
-      return "Error: Resource not found. Check the project/file ID is correct. Use localazy_list_projects and localazy_list_files to get valid IDs.";
+      return "Error: Resource not found. Check the file ID is correct. Use localazy_list_files to get valid IDs.";
     }
     if (statusCode === 429) {
       return "Error: Rate limit exceeded. Localazy allows 100 requests/min. Wait before retrying.";

@@ -1,46 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import { cached } from "../lib/cache.js";
-import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
-import { withRetry } from "../lib/retry.js";
-
-type ProjectWithLanguages = { id: string; languages?: unknown[] };
-
-async function fetchProjectLanguages(projectId: string): Promise<unknown[]> {
-  const api = getClient();
-  const projects = await withRetry(() =>
-    api.projects.list({ languages: true })
-  ) as ProjectWithLanguages[];
-  const project = projects.find((p) => p.id === projectId);
-  if (!project?.languages) {
-    throw new Error(`No languages found for project '${projectId}'`);
-  }
-  return project.languages;
-}
+import { resolveProject } from "../lib/translations.js";
 
 export function register(server: McpServer): void {
   server.registerTool(
     "localazy_list_languages",
     {
       title: "List Project Languages",
-      description: `List all languages configured for a Localazy project with translation statistics.
+      description: `List the project's languages with translation statistics: { code, name, source?, active, translated, current, review, sourceChanged, needImprovement }.
 
-Args:
-  - project_id (string): Project ID from localazy_list_projects
-
-Returns:
-  Array of languages with: language code, name, active keys count, translated/reviewed counts.
-
-Examples:
-  - Use when: "What languages are configured for this project?"
-  - Use when: You need language codes for translation operations`,
-      inputSchema: {
-        project_id: z
-          .string()
-          .describe("Project ID from localazy_list_projects"),
-      },
+\`active\` is the total key count and \`current\` is the approved count, so \`translated\` may exceed it. Use when the user asks which languages exist or how complete a translation is.`,
+      inputSchema: {},
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -48,12 +19,23 @@ Examples:
         openWorldHint: true,
       },
     },
-    async ({ project_id }) => {
+    async () => {
       try {
-        const languages = await cached(`languages:${project_id}`, () =>
-          fetchProjectLanguages(project_id)
-        );
-        return jsonResponse(languages);
+        const project = await resolveProject();
+        return jsonResponse({
+          project_name: project.name,
+          languages: project.languages.map((language) => ({
+            code: language.code,
+            name: language.name,
+            ...(language.id === project.sourceLanguage ? { source: true } : {}),
+            active: language.active,
+            translated: language.translated,
+            current: language.current,
+            review: language.review,
+            sourceChanged: language.sourceChanged,
+            needImprovement: language.needImprovement,
+          })),
+        });
       } catch (error) {
         return errorResponse(handleError(error));
       }

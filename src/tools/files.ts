@@ -1,34 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import { cached } from "../lib/cache.js";
-import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
-import { withRetry } from "../lib/retry.js";
+import { resolveProjectFiles } from "../lib/translations.js";
 
 export function register(server: McpServer): void {
   server.registerTool(
     "localazy_list_files",
     {
       title: "List Project Files",
-      description: `List all translation files in a Localazy project.
+      description: `List the translation files, as { id, name, type, path?, module? }.
 
-Returns file details including ID, name, type, and path. Use file IDs from the results with localazy_list_keys, localazy_search_keys, etc.
-
-Args:
-  - project_id (string): Project ID from localazy_list_projects
-
-Returns:
-  Array of files with: id, name, type, path, module.
-
-Examples:
-  - Use when: "What translation files are in this project?"
-  - Use when: You need a file ID for key/translation operations`,
-      inputSchema: {
-        project_id: z
-          .string()
-          .describe("Project ID from localazy_list_projects"),
-      },
+Use when you need a file ID for localazy_list_keys or to narrow localazy_find_translations.`,
+      inputSchema: {},
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -36,13 +19,18 @@ Examples:
         openWorldHint: true,
       },
     },
-    async ({ project_id }) => {
+    async () => {
       try {
-        const api = getClient();
-        const files = await cached(`files:${project_id}`, () =>
-          withRetry(() => api.files.list({ project: project_id }))
+        const { files } = await resolveProjectFiles();
+        return jsonResponse(
+          files.map((file) => ({
+            id: file.id,
+            name: file.name,
+            type: file.type,
+            ...(file.path ? { path: file.path } : {}),
+            ...(file.module ? { module: file.module } : {}),
+          }))
         );
-        return jsonResponse(files);
       } catch (error) {
         return errorResponse(handleError(error));
       }

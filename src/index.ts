@@ -2,7 +2,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { register as registerProjects } from "./tools/projects.js";
 import { register as registerFiles } from "./tools/files.js";
 import { register as registerLanguages } from "./tools/languages.js";
 import { register as registerKeys } from "./tools/keys.js";
@@ -13,11 +12,18 @@ import { register as registerQuality } from "./tools/quality.js";
 const server = new McpServer(
   { name: "localazy-mcp-server", version: "1.0.0" },
   {
-    instructions: `Localazy translation management server. Use these tools when the user asks about translation keys, localized strings, languages, or localization files. Users may say "Localazy" to explicitly target this server. For QA sweeps like punctuation checks, style cleanup, or placeholder/tag validation, prefer localazy_audit_translations and set scope to 'style', 'syntax', or 'all' based on the user's request. For focused lookup requests like finding invoice-related keys or showing checkout strings in a language, prefer localazy_find_translations. These workflow tools automatically use the first accessible project. Use project/file listing or paginated key browsing only when the user explicitly needs raw IDs, manual browsing, or pagination. When showing Localazy translation results, always display every value in full. Never shorten, truncate, or use ellipsis for translation values.`,
+    instructions: `Localazy translation management for Fractory's single Localazy project. Use for translation keys, localized strings, languages, and localization files. No tool takes a project ID — the project is resolved from the API token.
+
+- localazy_find_translations — search key names and values ("invoice-related keys in ET", "checkout strings in Estonian").
+- localazy_audit_translations — QA sweeps; set scope to 'style' (punctuation, quotes, dashes, spacing), 'syntax' (placeholders, tags), or 'all'.
+- localazy_list_languages / localazy_list_files — what exists, and file IDs.
+- localazy_list_keys — manual paginated browsing of one file.
+- localazy_upload_translations — create or update keys.
+
+Always display translation values in full — never shorten, truncate, or elide them.`,
   },
 );
 
-registerProjects(server);
 registerFiles(server);
 registerLanguages(server);
 registerKeys(server);
