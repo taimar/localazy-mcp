@@ -1,36 +1,56 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { File } from "@localazy/api-client";
 import { z } from "zod";
+import { FILE_CONCURRENCY } from "../constants.js";
+import { mapWithConcurrency } from "../lib/concurrency.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponseArray, errorResponse } from "../lib/response.js";
 import {
-  flattenTranslations,
-  formatFileLabel,
+  buildFileLabels,
+  checkProjectLanguage,
   getSourceLang,
-  listAllKeys,
-  resolveFiles,
-  resolveProject,
+  listFlatTranslations,
+  resolveProjectFiles,
 } from "../lib/translations.js";
 import { localazyLocaleSchema } from "../types.js";
 
 const MAX_RETURNED_ISSUES = 200;
-const TRAILING_CLOSERS_PATTERN = /[)\]"'»”’]+$/u;
+
+// Character-class fragments shared between a rule and the guard that fronts it.
+// Building both from one fragment stops a guard from ever being narrower than
+// its rule, which would silently stop that rule from firing.
+const SPACE = "[\\s\\u00A0\\u202F]";
+const CLOSERS = `)\\]"'»”’`;
+const SPACED_PUNCTUATION = "!?:;,.";
+
+const TRAILING_CLOSERS_PATTERN = new RegExp(`[${CLOSERS}]+$`, "u");
 const TRAILING_TAG_PATTERN = /(?:<\/(?:[A-Za-z][A-Za-z0-9-]*|\d+)>|<(?:[A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\s*\/>)\s*$/u;
 const TERMINAL_PUNCTUATION_PATTERN = /([.!?:;…]+)$/u;
-const SPACE_BEFORE_PUNCTUATION_PATTERN = /([\s\u00A0\u202F]+)([!?:;,.])/gu;
+const SPACE_BEFORE_PUNCTUATION_PATTERN = new RegExp(`(${SPACE}+)([${SPACED_PUNCTUATION}])`, "gu");
 const FRENCH_ALLOWED_SPACED_PUNCTUATION = new Set(["!", "?", ":", ";"]);
 const PLACEHOLDER_PATTERN = /\{\{\s*([^{}]+?)\s*\}\}/gu;
 const TAG_PATTERN = /<\/?([A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\/?>/gu;
-const ASCII_ELLIPSIS_PATTERN = /\.{3}/u;
 const STRAIGHT_APOSTROPHE_PATTERN = /(?<=[\p{L}\p{N}\}])'(?=\p{L})/u;
 const FRENCH_NON_GUILLEMET_QUOTES_PATTERN = /["“”]/u;
-const CURLY_QUOTE_INNER_SPACE_PATTERN = /(?:“[\s\u00A0\u202F]|[\s\u00A0\u202F]”|„[\s\u00A0\u202F]|[\s\u00A0\u202F]“)/u;
-const NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN = /(?:«[\s\u00A0\u202F]|[\s\u00A0\u202F]»|»[\s\u00A0\u202F]|[\s\u00A0\u202F]«)/u;
+const CURLY_QUOTE_INNER_SPACE_PATTERN = new RegExp(
+  `(?:“${SPACE}|${SPACE}”|„${SPACE}|${SPACE}“)`, "u");
+const NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN = new RegExp(
+  `(?:«${SPACE}|${SPACE}»|»${SPACE}|${SPACE}«)`, "u");
 const PARENTHESIS_INNER_SPACE_PATTERN = /(?:\(\s|\s\))/u;
 const NUMERIC_RANGE_SEGMENT_PATTERN = /\d+\s*[-–—]\s*\d+/gu;
 const NON_EN_DASH_RANGE_PATTERN = /\d+(?:\s*[-—]\s*|\s+–\s*|\s*–\s+)\d+/u;
 const NON_EN_DASH_SPACED_PATTERN = /\s(?:-|—)\s/u;
 const NON_FRENCH_UNSPACED_EM_DASH_PATTERN = /\S—\S/u;
 const WHITESPACE_CHARACTER_PATTERN = /\s/u;
+const DOUBLE_SPACE_PATTERN = / {2,}/u;
+
+// Fast-path guards. A project audit runs every rule over every translated
+// value, so most of the work is proving that a rule does not apply. Each guard
+// below fronts a scan that costs materially more than the guard itself.
+const GUARD_SPACE_BEFORE_PUNCTUATION = new RegExp(`${SPACE}[${SPACED_PUNCTUATION}]`, "u");
+const GUARD_STRIPPABLE_TAIL = new RegExp(`[${CLOSERS}>]$`, "u");
+const GUARD_QUOTE_CHARACTER = /["«»“”„]/u;
+const GUARD_DASH_CHARACTER = /[-–—]/u;
 
 type IssueType =
   | "apostrophe_style"
@@ -53,14 +73,13 @@ type IssueType =
 
 type AuditScope = "all" | "style" | "syntax";
 
-type AuditIssue = {
-  type: IssueType;
-  file: string;
-  file_id: string;
+type DetectedIssue = { type: IssueType; message: string };
+
+type AuditIssue = DetectedIssue & {
+  fileId: string;
   key: string;
-  message: string;
-  target_value: string;
-  source_value?: string;
+  targetValue: string;
+  sourceValue?: string;
 };
 
 const auditScopeSchema = z.enum(["all", "style", "syntax"]);
@@ -85,12 +104,27 @@ const ISSUE_SCOPE: Record<IssueType, Exclude<AuditScope, "all">> = {
   terminal_punctuation_mismatch: "style",
 };
 
+/**
+ * Issue types whose verdict depends on the source string. Only these carry a
+ * `source_value` in the response; the rest are target-intrinsic, so repeating
+ * the source would add bulk without adding information.
+ */
+const COMPARISON_ISSUE_TYPES = new Set<IssueType>([
+  "terminal_punctuation_mismatch",
+  "missing_placeholders",
+  "extra_placeholders",
+  "missing_tags",
+  "extra_tags",
+]);
+
 function normalizeTerminalPunctuation(text?: string): string {
   if (!text) return "";
 
   let visibleTail = text.trim();
 
-  while (true) {
+  // Only strip when something strippable is actually at the end; the loop
+  // below runs two regex replaces per pass.
+  while (GUARD_STRIPPABLE_TAIL.test(visibleTail)) {
     const stripped = visibleTail
       .replace(TRAILING_CLOSERS_PATTERN, "")
       .replace(TRAILING_TAG_PATTERN, "")
@@ -111,19 +145,28 @@ function isFrenchLocale(lang: string): boolean {
   return lang === "fr" || lang.startsWith("fr_") || lang.startsWith("fr#");
 }
 
-function hasInvalidSpaceBeforePunctuation(targetText: string, lang: string): boolean {
-  for (const [, , punctuation] of targetText.matchAll(SPACE_BEFORE_PUNCTUATION_PATTERN)) {
-    if (isFrenchLocale(lang) && FRENCH_ALLOWED_SPACED_PUNCTUATION.has(punctuation)) {
-      continue;
-    }
+function hasInvalidSpaceBeforePunctuation(targetText: string, isFrench: boolean): boolean {
+  if (!GUARD_SPACE_BEFORE_PUNCTUATION.test(targetText)) {
+    return false;
+  }
 
+  // Outside French every match is a violation, so the guard is the answer and
+  // the walk below can be skipped.
+  if (!isFrench) {
     return true;
+  }
+
+  for (const [, , punctuation] of targetText.matchAll(SPACE_BEFORE_PUNCTUATION_PATTERN)) {
+    if (!FRENCH_ALLOWED_SPACED_PUNCTUATION.has(punctuation)) {
+      return true;
+    }
   }
 
   return false;
 }
 
 function extractPlaceholders(text: string): string[] {
+  if (!text.includes("{{")) return [];
   return Array.from(text.matchAll(PLACEHOLDER_PATTERN), (match) => `{{${match[1]!.trim()}}}`);
 }
 
@@ -160,13 +203,17 @@ function formatTokenList(items: Array<{ token: string; count: number }>): string
 }
 
 function pushTokenDiffIssues(
-  issues: Array<{ type: IssueType; message: string }>,
+  issues: DetectedIssue[],
   sourceTokens: string[],
   targetTokens: string[],
   missingType: "missing_placeholders" | "missing_tags",
   extraType: "extra_placeholders" | "extra_tags",
   label: "placeholders" | "tags",
 ): void {
+  if (sourceTokens.length === 0 && targetTokens.length === 0) {
+    return;
+  }
+
   const sourceCounts = countTokens(sourceTokens);
   const targetCounts = countTokens(targetTokens);
   const missingTokens = diffTokenCounts(sourceCounts, targetCounts);
@@ -193,6 +240,8 @@ type TagAnalysis = {
 };
 
 function analyzeTags(text: string): TagAnalysis {
+  if (!text.includes("<")) return { tokens: [], structureError: null };
+
   const tokens: string[] = [];
   const stack: string[] = [];
 
@@ -240,7 +289,7 @@ function analyzeTags(text: string): TagAnalysis {
 }
 
 function getStyleText(text: string): string {
-  return text.replace(TAG_PATTERN, "");
+  return text.includes("<") ? text.replace(TAG_PATTERN, "") : text;
 }
 
 function isWhitespaceCharacter(char: string | undefined): boolean {
@@ -252,38 +301,23 @@ function isFrenchGuillemetSpace(char: string | undefined): boolean {
 }
 
 function hasInvalidFrenchGuillemetSpacing(text: string): boolean {
-  const chars = Array.from(text);
+  for (let i = text.indexOf("«"); i !== -1; i = text.indexOf("«", i + 1)) {
+    const next = text[i + 1];
+    if (isWhitespaceCharacter(next) && !isFrenchGuillemetSpace(next)) return true;
+  }
 
-  for (const [index, char] of chars.entries()) {
-    if (char === "«") {
-      const next = chars[index + 1];
-      if (isWhitespaceCharacter(next) && !isFrenchGuillemetSpace(next)) {
-        return true;
-      }
-      continue;
-    }
-
-    if (char === "»") {
-      const previous = chars[index - 1];
-      if (isWhitespaceCharacter(previous) && !isFrenchGuillemetSpace(previous)) {
-        return true;
-      }
-    }
+  for (let i = text.indexOf("»"); i !== -1; i = text.indexOf("»", i + 1)) {
+    const previous = text[i - 1];
+    if (isWhitespaceCharacter(previous) && !isFrenchGuillemetSpace(previous)) return true;
   }
 
   return false;
 }
 
 function hasMixedEmDashSpacing(text: string): boolean {
-  const chars = Array.from(text);
-
-  for (const [index, char] of chars.entries()) {
-    if (char !== "—") {
-      continue;
-    }
-
-    const hasLeftSpace = isWhitespaceCharacter(chars[index - 1]);
-    const hasRightSpace = isWhitespaceCharacter(chars[index + 1]);
+  for (let index = text.indexOf("—"); index !== -1; index = text.indexOf("—", index + 1)) {
+    const hasLeftSpace = isWhitespaceCharacter(text[index - 1]);
+    const hasRightSpace = isWhitespaceCharacter(text[index + 1]);
 
     if (hasLeftSpace !== hasRightSpace) {
       return true;
@@ -294,6 +328,8 @@ function hasMixedEmDashSpacing(text: string): boolean {
 }
 
 function getQuoteBalanceIssue(text: string): string | null {
+  if (!GUARD_QUOTE_CHARACTER.test(text)) return null;
+
   let straightDoubleQuoteCount = 0;
   const stack: Array<"«" | "“" | "„"> = [];
 
@@ -338,8 +374,12 @@ function getQuoteBalanceIssue(text: string): string | null {
   return null;
 }
 
-function getDashStyleIssues(text: string, lang: string): Array<{ type: IssueType; message: string }> {
-  const issues: Array<{ type: IssueType; message: string }> = [];
+function getDashStyleIssues(text: string, isFrench: boolean): DetectedIssue[] {
+  if (!GUARD_DASH_CHARACTER.test(text)) return [];
+
+  const issues: DetectedIssue[] = [];
+  // Numeric ranges are checked on their own; blank them out so they cannot
+  // also trip the sentence-dash rules.
   const withoutRanges = text.replaceAll(NUMERIC_RANGE_SEGMENT_PATTERN, " ");
 
   if (NON_EN_DASH_RANGE_PATTERN.test(text)) {
@@ -349,14 +389,14 @@ function getDashStyleIssues(text: string, lang: string): Array<{ type: IssueType
     });
   }
 
-  if (!isFrenchLocale(lang) && NON_EN_DASH_SPACED_PATTERN.test(withoutRanges)) {
+  if (!isFrench && NON_EN_DASH_SPACED_PATTERN.test(withoutRanges)) {
     issues.push({
       type: "dash_style",
       message: "Use an en dash for spaced dashes (for example ' – ').",
     });
   }
 
-  if (!isFrenchLocale(lang) && NON_FRENCH_UNSPACED_EM_DASH_PATTERN.test(withoutRanges)) {
+  if (!isFrench && NON_FRENCH_UNSPACED_EM_DASH_PATTERN.test(withoutRanges)) {
     issues.push({
       type: "dash_style",
       message: "Use a spaced en dash for sentence dashes (for example ' – ').",
@@ -373,12 +413,14 @@ function getDashStyleIssues(text: string, lang: string): Array<{ type: IssueType
   return issues;
 }
 
-function getQuoteInnerSpacingIssue(text: string, lang: string): string | null {
+function getQuoteInnerSpacingIssue(text: string, isFrench: boolean): string | null {
+  if (!GUARD_QUOTE_CHARACTER.test(text)) return null;
+
   if (CURLY_QUOTE_INNER_SPACE_PATTERN.test(text)) {
     return "Curly or directional quotes should not have spaces directly inside the quote marks.";
   }
 
-  if (!isFrenchLocale(lang) && NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN.test(text)) {
+  if (!isFrench && NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN.test(text)) {
     return "Non-French guillemets should not have spaces directly inside the quote marks.";
   }
 
@@ -397,34 +439,13 @@ function matchesAuditScope(type: IssueType, scope: AuditScope): boolean {
   return scope === "all" || ISSUE_SCOPE[type] === scope;
 }
 
-function createIssueCounts(): Record<IssueType, number> {
-  return {
-    apostrophe_style: 0,
-    dash_style: 0,
-    double_spaces: 0,
-    ellipsis_style: 0,
-    extra_placeholders: 0,
-    extra_tags: 0,
-    french_guillemet_spacing: 0,
-    french_quote_style: 0,
-    invalid_tag_structure: 0,
-    leading_or_trailing_whitespace: 0,
-    missing_placeholders: 0,
-    missing_tags: 0,
-    parenthesis_inner_spacing: 0,
-    quote_balance: 0,
-    quote_inner_spacing: 0,
-    space_before_punctuation: 0,
-    terminal_punctuation_mismatch: 0,
-  };
-}
-
 export function detectTranslationIssues(
   targetText: string,
   sourceText: string | undefined,
   lang = "en",
-): Array<{ type: IssueType; message: string }> {
-  const issues: Array<{ type: IssueType; message: string }> = [];
+): DetectedIssue[] {
+  const issues: DetectedIssue[] = [];
+  const isFrench = isFrenchLocale(lang);
   const targetTagAnalysis = analyzeTags(targetText);
   const styleText = getStyleText(targetText);
 
@@ -435,28 +456,28 @@ export function detectTranslationIssues(
     });
   }
 
-  if (/ {2,}/.test(targetText)) {
+  if (DOUBLE_SPACE_PATTERN.test(targetText)) {
     issues.push({
       type: "double_spaces",
       message: "Target contains consecutive spaces.",
     });
   }
 
-  if (hasInvalidSpaceBeforePunctuation(targetText, lang)) {
+  if (hasInvalidSpaceBeforePunctuation(targetText, isFrench)) {
     issues.push({
       type: "space_before_punctuation",
       message: "Target has a space immediately before punctuation.",
     });
   }
 
-  if (ASCII_ELLIPSIS_PATTERN.test(styleText)) {
+  if (styleText.includes("...")) {
     issues.push({
       type: "ellipsis_style",
       message: "Target uses '...' instead of the ellipsis character '…'.",
     });
   }
 
-  if (STRAIGHT_APOSTROPHE_PATTERN.test(styleText)) {
+  if (styleText.includes("'") && STRAIGHT_APOSTROPHE_PATTERN.test(styleText)) {
     issues.push({
       type: "apostrophe_style",
       message: "Use curly apostrophes (’) instead of straight apostrophes in contractions and possessives.",
@@ -471,7 +492,7 @@ export function detectTranslationIssues(
     });
   }
 
-  const quoteInnerSpacingIssue = getQuoteInnerSpacingIssue(styleText, lang);
+  const quoteInnerSpacingIssue = getQuoteInnerSpacingIssue(styleText, isFrench);
   if (quoteInnerSpacingIssue) {
     issues.push({
       type: "quote_inner_spacing",
@@ -487,21 +508,21 @@ export function detectTranslationIssues(
     });
   }
 
-  if (isFrenchLocale(lang) && FRENCH_NON_GUILLEMET_QUOTES_PATTERN.test(styleText)) {
+  if (isFrench && FRENCH_NON_GUILLEMET_QUOTES_PATTERN.test(styleText)) {
     issues.push({
       type: "french_quote_style",
       message: "French text should use guillemets (« ») instead of straight or curly double quotes.",
     });
   }
 
-  if (isFrenchLocale(lang) && hasInvalidFrenchGuillemetSpacing(styleText)) {
+  if (isFrench && hasInvalidFrenchGuillemetSpacing(styleText)) {
     issues.push({
       type: "french_guillemet_spacing",
       message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",
     });
   }
 
-  issues.push(...getDashStyleIssues(styleText, lang));
+  issues.push(...getDashStyleIssues(styleText, isFrench));
 
   if (sourceText !== undefined) {
     const sourcePunctuation = normalizeTerminalPunctuation(sourceText);
@@ -531,14 +552,9 @@ export function detectTranslationIssues(
       "extra_tags",
       "tags",
     );
+  }
 
-    if (targetTagAnalysis.structureError) {
-      issues.push({
-        type: "invalid_tag_structure",
-        message: targetTagAnalysis.structureError,
-      });
-    }
-  } else if (targetTagAnalysis.structureError) {
+  if (targetTagAnalysis.structureError) {
     issues.push({
       type: "invalid_tag_structure",
       message: targetTagAnalysis.structureError,
@@ -548,58 +564,164 @@ export function detectTranslationIssues(
   return issues;
 }
 
+type FileAudit = {
+  issues: AuditIssue[];
+  countsByType: Map<IssueType, number>;
+  scannedValueCount: number;
+};
+
+async function auditFile(
+  projectId: string,
+  file: File,
+  lang: string,
+  sourceLang: string,
+  scope: AuditScope,
+): Promise<FileAudit> {
+  // Auditing the source language against itself can only ever report
+  // target-intrinsic issues, so skip fetching and comparing the source. The two
+  // fetches otherwise run together.
+  const comparesSource = sourceLang !== lang;
+  const [targetEntries, sourceEntries] = await Promise.all([
+    listFlatTranslations(projectId, file.id, lang),
+    comparesSource ? listFlatTranslations(projectId, file.id, sourceLang) : [],
+  ]);
+
+  const sourceMap = new Map<string, string>();
+  for (const entry of sourceEntries) {
+    sourceMap.set(entry.key, entry.text);
+  }
+
+  const issues: AuditIssue[] = [];
+  const countsByType = new Map<IssueType, number>();
+
+  for (const entry of targetEntries) {
+    const sourceValue = comparesSource ? sourceMap.get(entry.key) : undefined;
+
+    for (const issue of detectTranslationIssues(entry.text, sourceValue, lang)) {
+      if (!matchesAuditScope(issue.type, scope)) {
+        continue;
+      }
+
+      countsByType.set(issue.type, (countsByType.get(issue.type) ?? 0) + 1);
+
+      // Each file keeps at most a full response's worth; the merge step below
+      // trims to the global cap.
+      if (issues.length < MAX_RETURNED_ISSUES) {
+        issues.push({
+          type: issue.type,
+          message: issue.message,
+          fileId: file.id,
+          key: entry.key,
+          targetValue: entry.text,
+          ...(sourceValue !== undefined && COMPARISON_ISSUE_TYPES.has(issue.type)
+            ? { sourceValue }
+            : {}),
+        });
+      }
+    }
+  }
+
+  return { issues, countsByType, scannedValueCount: targetEntries.length };
+}
+
+export type SerializedAuditIssue = {
+  type: IssueType;
+  file_id: string;
+  key: string;
+  message?: string;
+  target_value: string;
+  source_value?: string;
+};
+
+/**
+ * Hoist a rule's message into a legend so its issues can omit it. Most rules
+ * emit one fixed sentence that would otherwise repeat verbatim per occurrence.
+ *
+ * Only types whose every issue shares the same message are promoted. Rules with
+ * parameterized messages (a specific punctuation pair, a list of placeholders)
+ * are left inline: hoisting one of them would read as the rule for the type
+ * while actually describing a single occurrence.
+ */
+function buildRuleLegend(issues: AuditIssue[]): Record<string, string> {
+  const messagesByType = new Map<IssueType, string | null>();
+
+  for (const issue of issues) {
+    const seen = messagesByType.get(issue.type);
+    if (seen === undefined) {
+      messagesByType.set(issue.type, issue.message);
+    } else if (seen !== null && seen !== issue.message) {
+      messagesByType.set(issue.type, null); // varies — not a fixed rule
+    }
+  }
+
+  const legend: Record<string, string> = {};
+
+  for (const [type, message] of messagesByType) {
+    if (message !== null) legend[type] = message;
+  }
+
+  return legend;
+}
+
+/**
+ * Encode issues for the response: a fixed per-type message moves into `rules`,
+ * and issues of that type drop it. Every issue's message stays recoverable as
+ * `message ?? rules[type]`.
+ */
+export function serializeAuditIssues(issues: AuditIssue[]): {
+  issues: SerializedAuditIssue[];
+  rules: Record<string, string>;
+} {
+  const rules = buildRuleLegend(issues);
+
+  return {
+    rules,
+    issues: issues.map((issue) => ({
+      type: issue.type,
+      file_id: issue.fileId,
+      key: issue.key,
+      ...(issue.message === rules[issue.type] ? {} : { message: issue.message }),
+      target_value: issue.targetValue,
+      ...(issue.sourceValue !== undefined ? { source_value: issue.sourceValue } : {}),
+    })),
+  };
+}
+
 async function auditTranslations(lang: string, scope: AuditScope) {
   try {
-    const project = await resolveProject();
-    const files = await resolveFiles(project.id);
+    const { project, files } = await resolveProjectFiles();
+
+    const languageError = checkProjectLanguage(project, lang);
+    if (languageError) return errorResponse(languageError);
+
     const sourceLang = getSourceLang(project);
-    const countsByType = createIssueCounts();
+
+    const fileAudits = await mapWithConcurrency(files, FILE_CONCURRENCY, (file) =>
+      auditFile(project.id, file, lang, sourceLang, scope)
+    );
+
+    const countsByType = new Map<IssueType, number>();
     const issues: AuditIssue[] = [];
-    let issueCount = 0;
     let scannedValueCount = 0;
 
-    for (const file of files) {
-      const targetKeys = await listAllKeys(project.id, file.id, lang);
-      const sourceKeys = sourceLang === lang
-        ? targetKeys
-        : await listAllKeys(project.id, file.id, sourceLang);
-      const sourceMap = new Map(
-        flattenTranslations(sourceKeys).map((entry) => [entry.key, entry.text])
-      );
-
-      for (const entry of flattenTranslations(targetKeys)) {
-        scannedValueCount++;
-
-        for (const issue of detectTranslationIssues(entry.text, sourceMap.get(entry.key), lang)) {
-          if (!matchesAuditScope(issue.type, scope)) {
-            continue;
-          }
-
-          countsByType[issue.type]++;
-          issueCount++;
-
-          if (issues.length < MAX_RETURNED_ISSUES) {
-            issues.push({
-              type: issue.type,
-              file: formatFileLabel(file),
-              file_id: file.id,
-              key: entry.key,
-              message: issue.message,
-              target_value: entry.text,
-              ...(sourceMap.has(entry.key)
-                ? { source_value: sourceMap.get(entry.key) }
-                : {}),
-            });
-          }
-        }
+    for (const audit of fileAudits) {
+      scannedValueCount += audit.scannedValueCount;
+      for (const [type, count] of audit.countsByType) {
+        countsByType.set(type, (countsByType.get(type) ?? 0) + count);
+      }
+      for (const issue of audit.issues) {
+        if (issues.length >= MAX_RETURNED_ISSUES) break;
+        issues.push(issue);
       }
     }
 
+    const issueCount = [...countsByType.values()].reduce((total, count) => total + count, 0);
+    const { issues: serialized, rules } = serializeAuditIssues(issues);
+
     return jsonResponseArray(
-      issues,
+      serialized,
       "issues",
       {
-        project_id: project.id,
         project_name: project.name,
         lang,
         scope,
@@ -607,9 +729,10 @@ async function auditTranslations(lang: string, scope: AuditScope) {
         file_count: files.length,
         scanned_value_count: scannedValueCount,
         issue_count: issueCount,
-        counts_by_type: countsByType,
-        returned_count: issues.length,
         limited: issueCount > issues.length,
+        counts_by_type: Object.fromEntries(countsByType),
+        files: buildFileLabels(files, new Set(issues.map((issue) => issue.fileId))),
+        rules,
       },
       `Response contains the first ${MAX_RETURNED_ISSUES} issues. Inspect files manually if you need the full list.`
     );
@@ -619,30 +742,29 @@ async function auditTranslations(lang: string, scope: AuditScope) {
 }
 
 export function register(server: McpServer): void {
-  const inputSchema = {
-    lang: localazyLocaleSchema
-      .default("en")
-      .describe("Valid Localazy language code to inspect, for example 'et'"),
-    scope: auditScopeSchema
-      .default("all")
-      .describe("Which rules to audit: 'all', 'style', or 'syntax'"),
-  };
-  const annotations = {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  };
-
   server.registerTool(
     "localazy_audit_translations",
     {
       title: "Audit Translations",
-      description: `Audit a language for translation QA issues in one call.
+      description: `Audit a language for translation QA issues in one call, across every file in the first accessible project.
 
-Use this for requests like "Audit ET translations", "Audit FR style", or "Audit ET syntax". It automatically uses the first accessible project, scans all files, compares against the project's source language, and returns matching issues for the requested scope.`,
-      inputSchema,
-      annotations,
+Use for "Audit ET translations", "Audit FR style", "Audit ET syntax".
+
+Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its message as \`message ?? rules[type]\` — fixed rule text lives once in \`rules\`, and only per-occurrence messages are inline. Resolve \`file_id\` via the \`files\` map. \`source_value\` is present only for rules that compare against the source.`,
+      inputSchema: {
+        lang: localazyLocaleSchema
+          .default("en")
+          .describe("Language code to inspect, for example 'et'"),
+        scope: auditScopeSchema
+          .default("all")
+          .describe("'style' (punctuation, quotes, dashes, spacing), 'syntax' (placeholders, tags), or 'all'"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     async ({ lang, scope }) => auditTranslations(lang, scope)
   );
