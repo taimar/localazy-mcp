@@ -13,23 +13,36 @@ export type ArrayResponseMeta = {
 
 export type ArrayResponse = ToolResult & { _arrayMeta: ArrayResponseMeta };
 
-function truncateText(text: string, hint = "Use pagination or filters to reduce results."): string {
+const DEFAULT_TRUNCATION_HINT = "Use pagination or filters to reduce results.";
+
+function truncateText(text: string, hint = DEFAULT_TRUNCATION_HINT): string {
   if (text.length <= CHARACTER_LIMIT) return text;
   const suffix = `\n\n... [TRUNCATED] Response exceeded ${CHARACTER_LIMIT} characters. ${hint}`;
   return text.slice(0, Math.max(0, CHARACTER_LIMIT - suffix.length)) + suffix;
 }
 
-/** Fit serialized JSON fragments into a character budget. Returns [fitted, totalCount]. */
-function fitWithinBudget(fragments: string[], budget: number): [string[], number] {
-  const fitted: string[] = [];
+/**
+ * How many leading items fit in `budget` once serialized.
+ *
+ * Serializes lazily and stops at the first item that does not fit, so a
+ * 10,000-item result set that truncates at 200 pays for 201 serializations
+ * rather than 10,000.
+ */
+function countItemsWithinBudget<T>(items: T[], budget: number): number {
   let used = 0;
-  for (const f of fragments) {
-    const cost = f.length + (fitted.length > 0 ? 1 : 0);
+  let count = 0;
+
+  for (const item of items) {
+    // JSON.stringify returns undefined for undefined; inside an array that
+    // would serialize as "null".
+    const fragment = JSON.stringify(item) ?? "null";
+    const cost = fragment.length + (count > 0 ? 1 : 0);
     if (used + cost > budget) break;
-    fitted.push(f);
+    count++;
     used += cost;
   }
-  return [fitted, fragments.length];
+
+  return count;
 }
 
 /**
@@ -42,17 +55,17 @@ export function jsonResponseArray<T>(
   wrapper: Record<string, unknown> = {},
   truncationHint?: string,
 ): ArrayResponse {
-  const hint = truncationHint ?? "Use pagination or filters to reduce results.";
-  const skeleton = JSON.stringify({ ...wrapper, [itemsKey]: [], _meta: { included: 0, total: items.length, truncated: true, hint } });
+  const hint = truncationHint ?? DEFAULT_TRUNCATION_HINT;
+  const total = items.length;
+  const skeleton = JSON.stringify({ ...wrapper, [itemsKey]: [], _meta: { included: 0, total, truncated: true, hint } });
   const budget = CHARACTER_LIMIT - (skeleton.length - 2); // -2 for empty "[]"
 
   if (budget <= 0) {
     const fallback = jsonResponse({ ...wrapper, [itemsKey]: items }, truncationHint);
-    return { ...fallback, _arrayMeta: { includedCount: 0, totalCount: items.length, truncated: true } };
+    return { ...fallback, _arrayMeta: { includedCount: 0, totalCount: total, truncated: true } };
   }
 
-  const [fitted, total] = fitWithinBudget(items.map(i => JSON.stringify(i)), budget);
-  const included = items.slice(0, fitted.length);
+  const included = items.slice(0, countItemsWithinBudget(items, budget));
   const truncated = included.length < total;
 
   const result: Record<string, unknown> = { ...wrapper, [itemsKey]: included };
