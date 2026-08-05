@@ -71,6 +71,7 @@ Talk to Claude about translations:
 - "Audit ET translations"
 - "Audit ET style"
 - "Audit FR syntax"
+- "Which ET strings use straight apostrophes?"
 - "Which languages are configured?"
 - "Upload these translations: ..."
 
@@ -81,12 +82,23 @@ Talk to Claude about translations:
 | Tool | What it does |
 |---|---|
 | `localazy_find_translations` | Searches key names and target values across every file. Accepts optional file IDs. |
-| `localazy_audit_translations` | Audits one language for QA issues. The scope is `style`, `syntax`, or `all`. |
+| `localazy_audit_translations` | Audits one language for QA issues. The scope is `style`, `syntax`, or `all`. An optional `types` filter narrows the scope to named rules. |
 | `localazy_list_languages` | Lists the languages with translation statistics. |
 | `localazy_list_files` | Lists the translation files with their IDs. |
 | `localazy_list_keys` | Reads one page of keys from one file, with prefix filtering. |
 
 `style` covers punctuation, quotes, dashes, apostrophes, and spacing. `syntax` covers placeholders, tags, and broken tag structure.
+
+`types` accepts an array of rule names. It narrows `scope`, and it cannot widen
+it. A request for `dash_style` with scope `syntax` is refused, because
+the two exclude each other. Without the refusal, such a request reports zero
+issues after a full scan, which looks like a clean language. The response
+reports the effective list, so a type that the scope removed stays visible.
+
+A filter that excludes the comparison rules also halves the requests that a scan
+makes. The server reads the source language only for the rules that compare
+against it. A filter on `apostrophe_style` makes 29 requests instead of 58, and
+the response is 949 characters instead of 29942.
 
 ### Write
 

@@ -73,6 +73,16 @@ type IssueType =
 
 type AuditScope = "all" | "style" | "syntax";
 
+/**
+ * Which issues an audit reports. `types` is already intersected with `scope`
+ * when it is set, so a single membership test honours both. Undefined `types`
+ * means every type the scope allows.
+ */
+export type AuditFilter = {
+  scope: AuditScope;
+  types?: Set<IssueType>;
+};
+
 type DetectedIssue = { type: IssueType; message: string };
 
 type AuditIssue = DetectedIssue & {
@@ -103,6 +113,12 @@ const ISSUE_SCOPE: Record<IssueType, Exclude<AuditScope, "all">> = {
   space_before_punctuation: "style",
   terminal_punctuation_mismatch: "style",
 };
+
+// Derived from ISSUE_SCOPE so the accepted values cannot drift from the rules:
+// ISSUE_SCOPE is a Record over IssueType, so a new type must be added there.
+export const ISSUE_TYPES = Object.keys(ISSUE_SCOPE) as [IssueType, ...IssueType[]];
+
+const issueTypeSchema = z.enum(ISSUE_TYPES);
 
 /**
  * Issue types whose verdict depends on the source string. Only these carry a
@@ -435,8 +451,58 @@ function getParenthesisInnerSpacingIssue(text: string): string | null {
   return null;
 }
 
-function matchesAuditScope(type: IssueType, scope: AuditScope): boolean {
-  return scope === "all" || ISSUE_SCOPE[type] === scope;
+export function matchesAuditFilter(type: IssueType, filter: AuditFilter): boolean {
+  // `filter.types` is intersected with the scope in `resolveTypeFilter`, so this
+  // one lookup already answers both halves of the filter.
+  if (filter.types !== undefined) return filter.types.has(type);
+  return filter.scope === "all" || ISSUE_SCOPE[type] === filter.scope;
+}
+
+/**
+ * Whether any requested type needs the source string at all.
+ *
+ * Scope alone can never answer this — `terminal_punctuation_mismatch` is a
+ * style rule that compares against the source — but an explicit type filter
+ * often can, and skipping the source halves the requests a scan makes. The
+ * fetch, not the regex work, is what a project scan spends its time on.
+ */
+export function requiresSourceValues(filter: AuditFilter): boolean {
+  if (filter.types === undefined) return true;
+
+  for (const type of filter.types) {
+    if (COMPARISON_ISSUE_TYPES.has(type)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Narrow `scope` by the requested types. Scope stays authoritative: `types` can
+ * only remove types from the report, never add one the scope excludes.
+ *
+ * An empty intersection is refused rather than served. Such an audit scans every
+ * file and reports zero issues, which reads as a clean language instead of as a
+ * filter that excludes everything.
+ */
+export function resolveTypeFilter(
+  types: IssueType[] | undefined,
+  scope: AuditScope,
+): { types?: Set<IssueType>; error?: string } {
+  if (types === undefined || types.length === 0) return {};
+
+  const inScope = types.filter((type) => scope === "all" || ISSUE_SCOPE[type] === scope);
+
+  if (inScope.length === 0) {
+    const requestedScopes = [...new Set(types.map((type) => ISSUE_SCOPE[type]))].sort();
+    return {
+      error:
+        `Error: no requested type belongs to scope '${scope}'. ` +
+        `${types.join(", ")} — ${requestedScopes.join(" and ")}. ` +
+        `Use scope 'all', or '${requestedScopes[0]}'.`,
+    };
+  }
+
+  return { types: new Set(inScope) };
 }
 
 export function detectTranslationIssues(
@@ -575,12 +641,13 @@ async function auditFile(
   file: File,
   lang: string,
   sourceLang: string,
-  scope: AuditScope,
+  filter: AuditFilter,
 ): Promise<FileAudit> {
-  // Auditing the source language against itself can only ever report
-  // target-intrinsic issues, so skip fetching and comparing the source. The two
-  // fetches otherwise run together.
-  const comparesSource = sourceLang !== lang;
+  // Skip fetching the source when it cannot change the result: auditing the
+  // source language against itself only reports target-intrinsic issues, and a
+  // type filter may exclude every rule that compares the two. The two fetches
+  // otherwise run together.
+  const comparesSource = sourceLang !== lang && requiresSourceValues(filter);
   const [targetEntries, sourceEntries] = await Promise.all([
     listFlatTranslations(projectId, file.id, lang),
     comparesSource ? listFlatTranslations(projectId, file.id, sourceLang) : [],
@@ -598,7 +665,7 @@ async function auditFile(
     const sourceValue = comparesSource ? sourceMap.get(entry.key) : undefined;
 
     for (const issue of detectTranslationIssues(entry.text, sourceValue, lang)) {
-      if (!matchesAuditScope(issue.type, scope)) {
+      if (!matchesAuditFilter(issue.type, filter)) {
         continue;
       }
 
@@ -687,17 +754,21 @@ export function serializeAuditIssues(issues: AuditIssue[]): {
   };
 }
 
-async function auditTranslations(lang: string, scope: AuditScope) {
+async function auditTranslations(lang: string, scope: AuditScope, types?: IssueType[]) {
   try {
     const { project, files } = await resolveProjectFiles();
 
     const languageError = checkProjectLanguage(project, lang);
     if (languageError) return errorResponse(languageError);
 
+    const typeFilter = resolveTypeFilter(types, scope);
+    if (typeFilter.error) return errorResponse(typeFilter.error);
+
+    const filter: AuditFilter = { scope, ...(typeFilter.types ? { types: typeFilter.types } : {}) };
     const sourceLang = getSourceLang(project);
 
     const fileAudits = await mapWithConcurrency(files, FILE_CONCURRENCY, (file) =>
-      auditFile(project.id, file, lang, sourceLang, scope)
+      auditFile(project.id, file, lang, sourceLang, filter)
     );
 
     const countsByType = new Map<IssueType, number>();
@@ -725,6 +796,9 @@ async function auditTranslations(lang: string, scope: AuditScope) {
         project_name: project.name,
         lang,
         scope,
+        // The effective list, so a type dropped for being outside the scope is
+        // visible rather than silently absent.
+        ...(typeFilter.types ? { types: [...typeFilter.types] } : {}),
         source_lang: sourceLang,
         file_count: files.length,
         scanned_value_count: scannedValueCount,
@@ -746,9 +820,9 @@ export function register(server: McpServer): void {
     "localazy_audit_translations",
     {
       title: "Audit Translations",
-      description: `Audit a language for translation QA issues in one call, across every file in the first accessible project.
+      description: `Audit a language for translation QA issues in one call, across every file in the project.
 
-Use for "Audit ET translations", "Audit FR style", "Audit ET syntax".
+Use for "Audit ET translations", "Audit FR style", "Audit ET syntax", "Which ET strings use straight apostrophes".
 
 Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its message as \`message ?? rules[type]\` — fixed rule text lives once in \`rules\`, and only per-occurrence messages are inline. Resolve \`file_id\` via the \`files\` map. \`source_value\` is present only for rules that compare against the source.`,
       inputSchema: {
@@ -758,6 +832,11 @@ Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its
         scope: auditScopeSchema
           .default("all")
           .describe("'style' (punctuation, quotes, dashes, spacing), 'syntax' (placeholders, tags), or 'all'"),
+        types: z
+          .array(issueTypeSchema)
+          .min(1)
+          .optional()
+          .describe("Report only these issue types. Narrows 'scope' and cannot widen it"),
       },
       annotations: {
         readOnlyHint: true,
@@ -766,6 +845,6 @@ Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its
         openWorldHint: true,
       },
     },
-    async ({ lang, scope }) => auditTranslations(lang, scope)
+    async ({ lang, scope, types }) => auditTranslations(lang, scope, types)
   );
 }

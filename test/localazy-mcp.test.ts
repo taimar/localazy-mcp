@@ -10,7 +10,14 @@ import { flattenTranslations } from "../src/lib/translations.js";
 import { matchFields } from "../src/tools/find.js";
 import { normalizeTranslationsForImport, translationsSchema } from "../src/tools/import.js";
 import { formatListKeysPageOutput } from "../src/tools/keys.js";
-import { detectTranslationIssues, serializeAuditIssues } from "../src/tools/quality.js";
+import {
+  ISSUE_TYPES,
+  detectTranslationIssues,
+  matchesAuditFilter,
+  requiresSourceValues,
+  resolveTypeFilter,
+  serializeAuditIssues,
+} from "../src/tools/quality.js";
 import { localazyLocaleSchema } from "../src/types.js";
 
 test("translationsSchema accepts nested objects, plural maps, and string arrays", () => {
@@ -917,5 +924,95 @@ test("RateLimiter enforces every window it is given", async () => {
   for (const release of releases) {
     const inWindow = releases.filter((t) => t >= release && t < release + 300).length;
     assert.equal(inWindow <= 2, true, `${inWindow} releases inside the tight window`);
+  }
+});
+
+test("resolveTypeFilter narrows a scope instead of widening it", () => {
+  const filter = resolveTypeFilter(["dash_style", "missing_tags"], "style");
+
+  assert.equal(filter.error, undefined);
+  // missing_tags is a syntax rule, so the style scope drops it.
+  assert.deepEqual([...filter.types!], ["dash_style"]);
+});
+
+test("resolveTypeFilter keeps every requested type under scope 'all'", () => {
+  const filter = resolveTypeFilter(["dash_style", "missing_tags"], "all");
+
+  assert.equal(filter.error, undefined);
+  assert.deepEqual([...filter.types!].sort(), ["dash_style", "missing_tags"]);
+});
+
+test("resolveTypeFilter refuses a filter that excludes everything in scope", () => {
+  const filter = resolveTypeFilter(["dash_style", "ellipsis_style"], "syntax");
+
+  // Serving this would scan every file and report zero issues, which reads as a
+  // clean language rather than as a filter that matches nothing.
+  assert.equal(filter.types, undefined);
+  assert.match(filter.error!, /^Error: no requested type belongs to scope 'syntax'/);
+  assert.match(filter.error!, /dash_style, ellipsis_style/);
+  assert.match(filter.error!, /Use scope 'all', or 'style'/);
+});
+
+test("resolveTypeFilter treats a missing or empty type list as no filter", () => {
+  for (const types of [undefined, []] as const) {
+    const filter = resolveTypeFilter(types, "all");
+    assert.equal(filter.error, undefined);
+    assert.equal(filter.types, undefined);
+  }
+});
+
+test("matchesAuditFilter gates on types when set, and on scope when not", () => {
+  const typed = { scope: "all", types: new Set(["dash_style"] as const) };
+  assert.equal(matchesAuditFilter("dash_style", typed), true);
+  assert.equal(matchesAuditFilter("ellipsis_style", typed), false);
+
+  assert.equal(matchesAuditFilter("dash_style", { scope: "style" }), true);
+  assert.equal(matchesAuditFilter("dash_style", { scope: "syntax" }), false);
+  assert.equal(matchesAuditFilter("dash_style", { scope: "all" }), true);
+});
+
+test("requiresSourceValues is true for exactly the rules that compare the source", () => {
+  // Hardcoded rather than derived, so this asserts the intended set instead of
+  // restating the implementation. A false negative here would skip the source
+  // fetch and silently drop real issues.
+  const comparesSource = new Set([
+    "terminal_punctuation_mismatch",
+    "missing_placeholders",
+    "extra_placeholders",
+    "missing_tags",
+    "extra_tags",
+  ]);
+
+  for (const type of ISSUE_TYPES) {
+    assert.equal(
+      requiresSourceValues({ scope: "all", types: new Set([type]) }),
+      comparesSource.has(type),
+      `${type} disagrees on whether it needs the source`
+    );
+  }
+
+  // Any comparison rule in the set is enough to keep the fetch.
+  assert.equal(
+    requiresSourceValues({ scope: "all", types: new Set(["dash_style", "missing_tags"]) }),
+    true
+  );
+  // Without a type filter every rule may run, so the source is always needed.
+  assert.equal(requiresSourceValues({ scope: "all" }), true);
+  assert.equal(requiresSourceValues({ scope: "style" }), true);
+});
+
+test("ISSUE_TYPES covers every rule detectTranslationIssues can emit", () => {
+  // The types filter accepts exactly ISSUE_TYPES, so a rule missing from it
+  // would be unfilterable.
+  const emitted = [
+    ...detectTranslationIssues(" Tere  ,", "Hello!", "en"),
+    ...detectTranslationIssues("Tere {{a}} <b>x", "Hello {{b}} <i>x</i>", "en"),
+    ...detectTranslationIssues("Tere... don't \"x\" ( y ) 1-2 a—b", "Hello", "en"),
+    ...detectTranslationIssues("Bonjour « x » \"y\"", "Hello", "fr"),
+  ].map((issue) => issue.type);
+
+  assert.equal(emitted.length > 0, true);
+  for (const type of emitted) {
+    assert.equal(ISSUE_TYPES.includes(type), true, `${type} is missing from ISSUE_TYPES`);
   }
 });
