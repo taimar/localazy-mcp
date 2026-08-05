@@ -1,9 +1,9 @@
 /**
  * Every tunable knob, resolved once at startup.
  *
- * All of these are read here so the whole configuration surface is one file,
- * and so related limits (request rate against scan concurrency) can be
- * compared side by side.
+ * All of these are read here so all configuration lives in one file, and so
+ * related limits (request rate against scan concurrency) can be compared side
+ * by side.
  */
 
 /** Parse a positive integer from the environment, falling back to `fallback`. */
@@ -34,9 +34,12 @@ export const RATE_LIMIT_PER_SECOND = envInt("LOCALAZY_RATE_LIMIT_PER_SECOND", 30
 /**
  * How many files a project-wide scan reads in parallel.
  *
- * This does not change how many requests a scan makes — that is fixed by the
- * file count — only how fast it drains the rate limiter's bucket. An audit
- * fetches a target and a source language per file, so in-flight requests peak
- * at roughly twice this number.
+ * This does not change how many requests a scan makes — the file count and the
+ * audit's type filter fix that — only how fast it fills the rate limiter's
+ * windows.
+ *
+ * An audit reads the target language per file, plus the source language unless
+ * every requested rule is target-intrinsic, so in-flight requests peak at
+ * roughly twice this number.
  */
 export const FILE_CONCURRENCY = Math.min(envInt("LOCALAZY_FILE_CONCURRENCY", 8), RATE_LIMIT);
