@@ -20,6 +20,19 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promis
       if (attempt >= maxRetries || isClientError(error)) throw error;
 
       const isRateLimit = getStatusCode(error) === 429;
+
+      if (isRateLimit) {
+        // We deliberately run above Localazy's documented per-second limit, so a
+        // 429 is the signal to ease off for the rest of the session.
+        const reduced = rateLimiter.relax();
+        if (reduced !== null) {
+          console.error(
+            `Localazy returned 429; reducing to ~${reduced} requests/second for this session. ` +
+            "Set LOCALAZY_RATE_LIMIT_PER_SECOND lower to start there."
+          );
+        }
+      }
+
       const baseDelay = isRateLimit ? 15_000 : 1000 * 2 ** attempt;
       const jitter = Math.random() * (isRateLimit ? 5000 : 500);
       await new Promise((r) => setTimeout(r, baseDelay + jitter));
