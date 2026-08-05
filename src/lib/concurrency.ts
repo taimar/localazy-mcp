@@ -15,7 +15,7 @@
 export async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
-  fn: (item: T, index: number) => Promise<R>,
+  fn: (item: T) => Promise<R>,
   shouldStop: () => boolean = () => false,
 ): Promise<R[]> {
   const results: R[] = [];
@@ -24,7 +24,7 @@ export async function mapWithConcurrency<T, R>(
   async function worker(): Promise<void> {
     while (index < items.length && !shouldStop()) {
       const i = index++;
-      results[i] = await fn(items[i]!, i);
+      results[i] = await fn(items[i]!);
     }
   }
 

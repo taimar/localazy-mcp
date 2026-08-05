@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { handleError } from "../lib/errors.js";
-import { jsonResponse, errorResponse } from "../lib/response.js";
+import { jsonResponse, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
 import { resolveProject } from "../lib/translations.js";
 
 export function register(server: McpServer): void {
@@ -12,12 +12,7 @@ export function register(server: McpServer): void {
 
 \`active\` is the total key count and \`current\` is the approved count, so \`translated\` may exceed it. Use when the user asks which languages exist or how complete a translation is.`,
       inputSchema: {},
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY_ANNOTATIONS,
     },
     async () => {
       try {

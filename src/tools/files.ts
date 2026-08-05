@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { handleError } from "../lib/errors.js";
-import { jsonResponse, errorResponse } from "../lib/response.js";
+import { jsonResponse, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
 import { resolveProjectFiles } from "../lib/translations.js";
 
 export function register(server: McpServer): void {
@@ -12,12 +12,7 @@ export function register(server: McpServer): void {
 
 Use when you need a file ID for localazy_list_keys or to narrow localazy_find_translations.`,
       inputSchema: {},
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY_ANNOTATIONS,
     },
     async () => {
       try {

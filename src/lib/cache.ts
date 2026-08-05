@@ -3,14 +3,31 @@
  *
  * Used to avoid repeated API calls for data that rarely changes during a
  * session (project list, file list, languages, translation values).
+ *
+ * A read drops an expired entry lazily, and writes sweep the rest. Both are
+ * needed. Most key families stay small — one project, one file list, one entry
+ * per file and language — but `cacheKeys.keysPage` also varies by page limit and
+ * cursor, so nothing ever reads those entries again to evict them. At roughly
+ * 150 KB per page, a long paging session would otherwise retain every page it
+ * ever fetched. Nothing stale is served either way, because reads check expiry.
+ *
+ * An upload clears the whole cache.
  */
 
-/** How often to walk the map evicting expired entries, in ms. */
+/** How often a write walks the map evicting expired entries, in ms. */
 const SWEEP_INTERVAL_MS = 60_000;
 
 export class TTLCache<T> {
   private data = new Map<string, { value: T; expiresAt: number }>();
   private lastSweep = Date.now();
+
+  /** The interval is injectable so tests do not have to wait a minute for it. */
+  constructor(private readonly sweepIntervalMs: number = SWEEP_INTERVAL_MS) {}
+
+  /** Entry count, expired-but-not-yet-evicted entries included. */
+  get size(): number {
+    return this.data.size;
+  }
 
   /**
    * Return the live entry for `key`, or undefined if missing or expired.
@@ -41,15 +58,21 @@ export class TTLCache<T> {
   }
 
   /**
-   * Evict expired entries. Reads already evict lazily, so this only reclaims
-   * entries nothing looks at again — and only while writes keep arriving,
-   * which is enough to stop a long session from accumulating stale
-   * translation sets.
+   * Evict every expired entry, at most once per interval.
+   *
+   * This is what keeps a paging session flat: the resident set stays near one TTL
+   * window of writes instead of growing with the whole session. It matters after
+   * the writes stop, too — what a session holds once it goes idle is whatever the
+   * last sweep left behind, so the bound survives even though no later sweep runs.
+   *
+   * Writes drive it rather than a timer, because a process that has stopped
+   * writing has also stopped growing.
    */
   private sweepIfDue(): void {
     const now = Date.now();
-    if (now - this.lastSweep < SWEEP_INTERVAL_MS) return;
+    if (now - this.lastSweep < this.sweepIntervalMs) return;
     this.lastSweep = now;
+
     for (const [key, entry] of this.data) {
       if (now > entry.expiresAt) this.data.delete(key);
     }

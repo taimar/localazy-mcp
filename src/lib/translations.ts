@@ -90,13 +90,17 @@ export function getSourceLang(project: Project): string {
  * unconfigured language spends a request per file and then reports zero issues
  * over zero values — indistinguishable from a clean result.
  *
- * Returns an error message, or null when the language is configured.
+ * Throws rather than returning a message, so no caller can read the language and
+ * forget to act on the answer. Every tool renders a thrown error through
+ * `handleError`, which prefixes it the same way an `errorResponse` would.
  */
-export function checkProjectLanguage(project: Project, lang: string): string | null {
-  if (project.languages.some((language) => language.code === lang)) return null;
+export function assertProjectLanguage(project: Project, lang: string): void {
+  if (project.languages.some((language) => language.code === lang)) return;
 
   const available = project.languages.map((language) => language.code).sort().join(", ");
-  return `Error: '${lang}' is not a language in this project. Available languages: ${available}.`;
+  throw new Error(
+    `'${lang}' is not a language in this project. Available languages: ${available}.`
+  );
 }
 
 async function resolveFiles(projectId: string): Promise<File[]> {
@@ -134,4 +138,32 @@ export async function listFlatTranslations(
     );
     return flattenTranslations(keys);
   });
+}
+
+/**
+ * One raw page of keys from a file, for manual browsing.
+ *
+ * Lives beside the other Localazy reads so no tool assembles client, retry and
+ * cache wiring of its own — the page cursor is the only thing the caller tracks.
+ */
+export async function listKeysPage(options: {
+  projectId: string;
+  fileId: string;
+  lang: string;
+  limit: number;
+  extraInfo: boolean;
+  cursor?: string;
+}) {
+  const { projectId, fileId, lang, limit, extraInfo, cursor } = options;
+
+  return cached(cacheKeys.keysPage(projectId, fileId, lang, limit, extraInfo, cursor), () =>
+    withRetry(() => getClient().files.listKeysPage({
+      project: projectId,
+      file: fileId,
+      lang: asLocale(lang),
+      limit,
+      next: cursor,
+      extra_info: extraInfo,
+    }))
+  );
 }

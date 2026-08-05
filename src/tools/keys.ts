@@ -1,12 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { cacheKeys, cached } from "../lib/cache.js";
-import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
-import { jsonResponseArray, errorResponse } from "../lib/response.js";
-import { withRetry } from "../lib/retry.js";
-import { checkProjectLanguage, formatKeyPath, resolveProject } from "../lib/translations.js";
-import { asLocale, localazyLocaleSchema } from "../types.js";
+import { jsonResponseArray, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
+import {
+  assertProjectLanguage,
+  formatKeyPath,
+  listKeysPage,
+  resolveProject,
+} from "../lib/translations.js";
+import { localazyLocaleSchema } from "../types.js";
 import type { Key } from "../types.js";
 
 export function formatListKeysPageOutput(
@@ -79,31 +81,24 @@ Use for manual paginated browsing. To search or QA the project, prefer localazy_
           .default(false)
           .describe("Include key IDs, comments, deprecation, hidden flag, and length limits"),
       },
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ file_id, lang, limit, next, prefix, extra_info }) => {
       try {
-        const api = getClient();
         const project = await resolveProject();
-
-        const languageError = checkProjectLanguage(project, lang);
-        if (languageError) return errorResponse(languageError);
+        assertProjectLanguage(project, lang);
 
         const hint = "Use a smaller 'limit', pagination with the 'next' cursor, or a 'prefix' filter.";
 
         const fetchPage = async (pageLimit: number) => {
-          const cacheKey = cacheKeys.keysPage(project.id, file_id, lang, pageLimit, extra_info, next);
-          const result = await cached(cacheKey, () =>
-            withRetry(() => api.files.listKeysPage({
-              project: project.id, file: file_id, lang: asLocale(lang),
-              limit: pageLimit, next, extra_info,
-            }))
-          );
+          const result = await listKeysPage({
+            projectId: project.id,
+            fileId: file_id,
+            lang,
+            limit: pageLimit,
+            extraInfo: extra_info,
+            cursor: next,
+          });
           const output = formatListKeysPageOutput(result, extra_info);
           const keys = prefix
             ? output.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))

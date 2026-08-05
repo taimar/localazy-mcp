@@ -3,10 +3,10 @@ import { z } from "zod";
 import { FILE_CONCURRENCY } from "../constants.js";
 import { mapWithConcurrency } from "../lib/concurrency.js";
 import { handleError } from "../lib/errors.js";
-import { jsonResponseArray, errorResponse } from "../lib/response.js";
+import { jsonResponseArray, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
 import {
+  assertProjectLanguage,
   buildFileLabels,
-  checkProjectLanguage,
   listFlatTranslations,
   resolveProjectFiles,
 } from "../lib/translations.js";
@@ -41,11 +41,12 @@ export function matchFields(
   return null;
 }
 
+/** A match in its response shape, so nothing has to be remapped on the way out. */
 type FileMatch = {
-  fileId: string;
+  file_id: string;
   key: string;
-  targetValue: string;
-  matchedIn: MatchedField[];
+  target_value: string;
+  matched_in: MatchedField[];
 };
 
 export function register(server: McpServer): void {
@@ -72,12 +73,7 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
           .optional()
           .describe("Limit the search to these file IDs (from localazy_list_files); searches all files if omitted"),
       },
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ query, lang, file_ids }) => {
       try {
@@ -87,9 +83,7 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
         }
 
         const { project, files: allFiles } = await resolveProjectFiles();
-
-        const languageError = checkProjectLanguage(project, lang);
-        if (languageError) return errorResponse(languageError);
+        assertProjectLanguage(project, lang);
 
         let files = allFiles;
         if (file_ids?.length) {
@@ -117,10 +111,10 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
               if (!matchedIn) continue;
 
               matches.push({
-                fileId: file.id,
+                file_id: file.id,
                 key: entry.key,
-                targetValue: entry.text,
-                matchedIn,
+                target_value: entry.text,
+                matched_in: matchedIn,
               });
 
               if (matches.length >= MAX_MATCHES) break;
@@ -137,12 +131,7 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
         const matches = scanned.slice(0, MAX_MATCHES);
 
         return jsonResponseArray(
-          matches.map((match) => ({
-            file_id: match.fileId,
-            key: match.key,
-            target_value: match.targetValue,
-            matched_in: match.matchedIn,
-          })),
+          matches,
           "matches",
           {
             project_name: project.name,
@@ -151,7 +140,7 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
             file_count: files.length,
             match_count: matches.length,
             limited: scanned.length > matches.length || perFile.length < files.length,
-            files: buildFileLabels(files, new Set(matches.map((match) => match.fileId))),
+            files: buildFileLabels(files, new Set(matches.map((match) => match.file_id))),
           },
           `Response contains the first ${MAX_MATCHES} matches. Refine the query if you need a smaller result set.`
         );

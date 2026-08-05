@@ -13,9 +13,8 @@ import { formatListKeysPageOutput } from "../src/tools/keys.js";
 import {
   ISSUE_TYPES,
   detectTranslationIssues,
-  matchesAuditFilter,
   requiresSourceValues,
-  resolveTypeFilter,
+  resolveAuditTypes,
   serializeAuditIssues,
 } from "../src/tools/quality.js";
 import { localazyLocaleSchema } from "../src/types.js";
@@ -606,6 +605,20 @@ test("TTLCache returns cached values and expires them after TTL", async () => {
   assert.equal(cache.get("missing"), undefined);
 });
 
+test("TTLCache sweeps expired entries as writes arrive, so a paging session stays flat", async () => {
+  // What this guards: page cache keys vary by limit and cursor, so nothing ever
+  // reads a page again to evict it lazily. Without the sweep, a long paging
+  // session retains every page it ever fetched, at ~150 KB each.
+  const cache = new TTLCache<string>(0); // sweep on every write
+  for (let i = 0; i < 10; i++) cache.set(`page-${i}`, "x", 20);
+  assert.equal(cache.size, 10);
+
+  await new Promise((r) => setTimeout(r, 30));
+  cache.set("fresh", "x", 60_000);
+
+  assert.equal(cache.size, 1, "the ten expired pages should be evicted, not merely unreadable");
+});
+
 test("invalidateCache drops every cached entry", () => {
   apiCache.set(cacheKeys.projects, "p", 60_000);
   apiCache.set(cacheKeys.files("projA"), "fA", 60_000);
@@ -850,6 +863,37 @@ test("RateLimiter makes a caller wait for the window to roll once it is full", a
   assert.equal(elapsed < 2000, true);
 });
 
+/** Acquire `count` slots at once, and report when each one was released. */
+async function collectReleases(limiter: RateLimiter, count: number): Promise<number[]> {
+  const start = Date.now();
+  const releases: number[] = [];
+
+  await Promise.all(
+    Array.from({ length: count }, () =>
+      limiter.acquire().then(() => releases.push(Date.now() - start))
+    )
+  );
+
+  return releases;
+}
+
+/**
+ * The most releases that any trailing window of `windowMs` holds.
+ *
+ * Every offset is measured, not only the first window, so the result holds
+ * regardless of how loaded the machine is.
+ */
+function maxInAnyWindow(releases: number[], windowMs: number): number {
+  let peak = 0;
+
+  for (const release of releases) {
+    const inWindow = releases.filter((t) => t >= release && t < release + windowMs).length;
+    peak = Math.max(peak, inWindow);
+  }
+
+  return peak;
+}
+
 test("RateLimiter never exceeds the cap in any window, even under a burst", async () => {
   // A token bucket would let 2x the cap through the first window; that is what
   // trips Localazy's 10 req/s ceiling during a parallel project scan.
@@ -857,22 +901,11 @@ test("RateLimiter never exceeds the cap in any window, even under a burst", asyn
   const windowMs = 1000;
   const limiter = new RateLimiter([{ capacity, windowMs }]);
 
-  const start = Date.now();
-  const releases: number[] = [];
-  await Promise.all(
-    Array.from({ length: 25 }, () =>
-      limiter.acquire().then(() => releases.push(Date.now() - start))
-    )
-  );
+  const releases = await collectReleases(limiter, 25);
 
   assert.equal(releases.length, 25, "every caller must eventually be released");
-
-  // The real invariant, and it holds regardless of how the machine is loaded:
-  // no trailing window of any offset may hold more than `capacity` releases.
-  for (const release of releases) {
-    const inWindow = releases.filter((t) => t >= release && t < release + windowMs).length;
-    assert.equal(inWindow <= capacity, true, `${inWindow} releases inside one window`);
-  }
+  const peak = maxInAnyWindow(releases, windowMs);
+  assert.equal(peak <= capacity, true, `${peak} releases inside one window`);
 });
 
 test("RateLimiter relax() halves the shortest window and stops at the floor", async () => {
@@ -887,22 +920,27 @@ test("RateLimiter relax() halves the shortest window and stops at the floor", as
   assert.equal(limiter.relax(), null, "reports nothing left to give up");
 });
 
+test("RateLimiter relax() never raises a capacity configured below the floor", async () => {
+  // LOCALAZY_RATE_LIMIT_PER_SECOND=3 is a deliberate choice by whoever set it, so
+  // a 429 must not walk it up to the floor — which would answer pushback by going
+  // faster, and make withRetry log an increase as a "reduction".
+  const windowMs = 400;
+  const limiter = new RateLimiter([{ capacity: 3, windowMs }]);
+
+  assert.equal(limiter.relax(), null, "below the floor there is nothing to give up");
+
+  const peak = maxInAnyWindow(await collectReleases(limiter, 4), windowMs);
+  assert.equal(peak <= 3, true, `${peak} releases inside one window, the cap was 3`);
+});
+
 test("RateLimiter honours a relaxed capacity on subsequent acquires", async () => {
   const windowMs = 500;
   const limiter = new RateLimiter([{ capacity: 20, windowMs }]);
   assert.equal(limiter.relax(), 10);
 
-  const start = Date.now();
-  const releases: number[] = [];
-  await Promise.all(
-    Array.from({ length: 11 }, () =>
-      limiter.acquire().then(() => releases.push(Date.now() - start))
-    )
-  );
-
   // With the cap now 10, the 11th cannot share a window with the first ten.
-  const firstWindow = releases.filter((t) => t < releases[0]! + windowMs).length;
-  assert.equal(firstWindow <= 10, true, `${firstWindow} releases before the window rolled`);
+  const peak = maxInAnyWindow(await collectReleases(limiter, 11), windowMs);
+  assert.equal(peak <= 10, true, `${peak} releases inside one window`);
 });
 
 test("RateLimiter enforces every window it is given", async () => {
@@ -912,63 +950,48 @@ test("RateLimiter enforces every window it is given", async () => {
     { capacity: 100, windowMs: 60_000 },
   ]);
 
-  const start = Date.now();
-  const releases: number[] = [];
-  await Promise.all(
-    Array.from({ length: 6 }, () =>
-      limiter.acquire().then(() => releases.push(Date.now() - start))
-    )
-  );
-
   // The tighter window binds: at most 2 releases in any 300ms stretch.
-  for (const release of releases) {
-    const inWindow = releases.filter((t) => t >= release && t < release + 300).length;
-    assert.equal(inWindow <= 2, true, `${inWindow} releases inside the tight window`);
-  }
+  const peak = maxInAnyWindow(await collectReleases(limiter, 6), 300);
+  assert.equal(peak <= 2, true, `${peak} releases inside the tight window`);
 });
 
-test("resolveTypeFilter narrows a scope instead of widening it", () => {
-  const filter = resolveTypeFilter(["dash_style", "missing_tags"], "style");
-
-  assert.equal(filter.error, undefined);
+test("resolveAuditTypes narrows a scope instead of widening it", () => {
   // missing_tags is a syntax rule, so the style scope drops it.
-  assert.deepEqual([...filter.types!], ["dash_style"]);
+  assert.deepEqual([...resolveAuditTypes("style", ["dash_style", "missing_tags"])], ["dash_style"]);
 });
 
-test("resolveTypeFilter keeps every requested type under scope 'all'", () => {
-  const filter = resolveTypeFilter(["dash_style", "missing_tags"], "all");
-
-  assert.equal(filter.error, undefined);
-  assert.deepEqual([...filter.types!].sort(), ["dash_style", "missing_tags"]);
+test("resolveAuditTypes keeps every requested type under scope 'all'", () => {
+  assert.deepEqual(
+    [...resolveAuditTypes("all", ["dash_style", "missing_tags"])].sort(),
+    ["dash_style", "missing_tags"]
+  );
 });
 
-test("resolveTypeFilter refuses a filter that excludes everything in scope", () => {
-  const filter = resolveTypeFilter(["dash_style", "ellipsis_style"], "syntax");
-
+test("resolveAuditTypes refuses a filter that excludes everything in scope", () => {
   // Serving this would scan every file and report zero issues, which reads as a
   // clean language rather than as a filter that matches nothing.
-  assert.equal(filter.types, undefined);
-  assert.match(filter.error!, /^Error: no requested type belongs to scope 'syntax'/);
-  assert.match(filter.error!, /dash_style, ellipsis_style/);
-  assert.match(filter.error!, /Use scope 'all', or 'style'/);
+  assert.throws(() => resolveAuditTypes("syntax", ["dash_style", "ellipsis_style"]), (error) => {
+    const { message } = error as Error;
+    assert.match(message, /^no requested type belongs to scope 'syntax'/);
+    assert.match(message, /dash_style, ellipsis_style/);
+    assert.match(message, /Use scope 'all', or 'style'/);
+    return true;
+  });
 });
 
-test("resolveTypeFilter treats a missing or empty type list as no filter", () => {
-  for (const types of [undefined, []] as const) {
-    const filter = resolveTypeFilter(types, "all");
-    assert.equal(filter.error, undefined);
-    assert.equal(filter.types, undefined);
+test("resolveAuditTypes expands a missing or empty type list to the whole scope", () => {
+  for (const types of [undefined, []]) {
+    assert.deepEqual([...resolveAuditTypes("all", types)].sort(), [...ISSUE_TYPES].sort());
   }
 });
 
-test("matchesAuditFilter gates on types when set, and on scope when not", () => {
-  const typed = { scope: "all", types: new Set(["dash_style"] as const) };
-  assert.equal(matchesAuditFilter("dash_style", typed), true);
-  assert.equal(matchesAuditFilter("ellipsis_style", typed), false);
-
-  assert.equal(matchesAuditFilter("dash_style", { scope: "style" }), true);
-  assert.equal(matchesAuditFilter("dash_style", { scope: "syntax" }), false);
-  assert.equal(matchesAuditFilter("dash_style", { scope: "all" }), true);
+test("resolveAuditTypes returns the set that decides what an audit reports", () => {
+  // The resolved set is the only gate downstream, so scope and types have to be
+  // answered here rather than re-derived per issue.
+  assert.equal(resolveAuditTypes("style").has("dash_style"), true);
+  assert.equal(resolveAuditTypes("syntax").has("dash_style"), false);
+  assert.equal(resolveAuditTypes("all").has("dash_style"), true);
+  assert.equal(resolveAuditTypes("all", ["dash_style"]).has("ellipsis_style"), false);
 });
 
 test("requiresSourceValues is true for exactly the rules that compare the source", () => {
@@ -985,20 +1008,19 @@ test("requiresSourceValues is true for exactly the rules that compare the source
 
   for (const type of ISSUE_TYPES) {
     assert.equal(
-      requiresSourceValues({ scope: "all", types: new Set([type]) }),
+      requiresSourceValues(new Set([type])),
       comparesSource.has(type),
       `${type} disagrees on whether it needs the source`
     );
   }
 
   // Any comparison rule in the set is enough to keep the fetch.
-  assert.equal(
-    requiresSourceValues({ scope: "all", types: new Set(["dash_style", "missing_tags"]) }),
-    true
-  );
-  // Without a type filter every rule may run, so the source is always needed.
-  assert.equal(requiresSourceValues({ scope: "all" }), true);
-  assert.equal(requiresSourceValues({ scope: "style" }), true);
+  assert.equal(requiresSourceValues(new Set(["dash_style", "missing_tags"])), true);
+  // Without a type filter every rule in the scope may run, and every scope holds
+  // at least one comparison rule — 'style' through terminal_punctuation_mismatch.
+  for (const scope of ["all", "style", "syntax"] as const) {
+    assert.equal(requiresSourceValues(resolveAuditTypes(scope)), true, scope);
+  }
 });
 
 test("ISSUE_TYPES covers every rule detectTranslationIssues can emit", () => {

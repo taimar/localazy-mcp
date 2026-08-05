@@ -23,14 +23,18 @@ export type WindowSpec = {
 class SlidingWindow {
   private readonly releases: number[] = [];
 
-  constructor(private capacity: number, private readonly windowMs: number) {}
+  constructor(private capacity: number, readonly windowMs: number) {}
 
-  get capacityValue(): number {
-    return this.capacity;
-  }
-
-  /** Halve the allowance, never below `floor`. Returns the new capacity. */
-  reduceCapacity(floor: number): number {
+  /**
+   * Halve the allowance, never below `floor` and never upward. Returns the new
+   * capacity, or null when there is nothing left to give up.
+   *
+   * A capacity already at or under the floor returns null rather than rising to
+   * meet it. A configured rate below the floor is the operator's choice, so a 429
+   * must not answer pushback by going faster.
+   */
+  reduceCapacity(floor: number): number | null {
+    if (this.capacity <= floor) return null;
     this.capacity = Math.max(floor, Math.floor(this.capacity / 2));
     return this.capacity;
   }
@@ -41,16 +45,11 @@ class SlidingWindow {
     }
   }
 
-  hasRoom(): boolean {
-    this.prune(Date.now());
-    return this.releases.length < this.capacity;
-  }
-
   record(now: number): void {
     this.releases.push(now);
   }
 
-  /** Milliseconds until this window has room again. */
+  /** Milliseconds until this window has room again, or 0 when it has room now. */
   msUntilRoom(): number {
     const now = Date.now();
     this.prune(now);
@@ -83,7 +82,7 @@ export class RateLimiter {
 
   /** Record a release against every window, or against none. */
   private tryTake(): boolean {
-    if (!this.windows.every((window) => window.hasRoom())) return false;
+    if (!this.windows.every((window) => window.msUntilRoom() === 0)) return false;
     const now = Date.now();
     for (const window of this.windows) window.record(now);
     return true;
@@ -134,13 +133,18 @@ export class RateLimiter {
    * session repeatedly paying the retry backoff.
    *
    * Returns the new allowance, or null when there is nothing left to give up.
+   * The shortest window is found rather than assumed, because the constructor
+   * takes windows in any order while the floor below is a per-second figure.
    */
   relax(): number | null {
-    const shortest = this.windows[0];
+    let shortest = this.windows[0];
     if (!shortest) return null;
-    const previous = shortest.capacityValue;
-    const reduced = shortest.reduceCapacity(MIN_PER_SECOND_CAPACITY);
-    return reduced < previous ? reduced : null;
+
+    for (const window of this.windows) {
+      if (window.windowMs < shortest.windowMs) shortest = window;
+    }
+
+    return shortest.reduceCapacity(MIN_PER_SECOND_CAPACITY);
   }
 
   /** Wait until every window has room, then claim a slot in each. */

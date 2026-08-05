@@ -1,9 +1,11 @@
 /**
- * Every tunable knob, resolved once at startup.
+ * Every knob the environment can tune, resolved once at startup.
  *
- * All of these are read here so all configuration lives in one file, and so
- * related limits (request rate against scan concurrency) can be compared side
- * by side.
+ * All of these are read here so all environment configuration lives in one file,
+ * and so related limits (request rate against scan concurrency) can be compared
+ * side by side. A cap with no environment override stays beside the code that
+ * applies it: `MAX_MATCHES` in `tools/find.ts`, `MAX_RETURNED_ISSUES` in
+ * `tools/quality.ts`.
  */
 
 /** Parse a positive integer from the environment, falling back to `fallback`. */

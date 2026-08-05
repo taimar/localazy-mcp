@@ -5,6 +5,17 @@ export type ToolResult = {
   isError?: boolean;
 };
 
+/**
+ * Annotations every read-only tool registers. Clients treat these as hints about
+ * what a tool may do, so all of the read tools have to state the same thing.
+ */
+export const READ_ONLY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+
 export type ArrayResponseMeta = {
   includedCount: number;
   totalCount: number;
