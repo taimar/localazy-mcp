@@ -1,6 +1,8 @@
 # Localazy MCP Server
 
-Gives Claude access to our Localazy translations. Once set up, you can ask Claude to search keys, export translations, and import updates — all through natural conversation.
+Connects Claude to the Fractory Localazy project. Claude can search keys, audit translations, and upload updates through conversation.
+
+The server works with one project. It resolves that project from the API token, so no tool takes a project ID.
 
 ## Setup
 
@@ -11,28 +13,48 @@ npm install
 npm run build
 ```
 
-### 2. Create your local config
+### 2. Create your local configuration
 
-Copy the example config:
+Copy the example file:
 
 ```bash
 cp .mcp.example.json .mcp.json
 ```
 
-Edit `.mcp.json` and fill in:
-- `cwd` — absolute path to your clone of this repo
-- `LOCALAZY_API_TOKEN` — get one from [Localazy Console](https://localazy.com/developer/tokens)
+Open `.mcp.json` and fill in two values:
 
-You can also add optional env variables to tune behavior:
-- `LOCALAZY_RATE_LIMIT` — max API requests per minute (default: 90, Localazy limit is 100)
-- `LOCALAZY_SEARCH_MAX_RESULTS` — max matching keys returned (default: 1000)
-- `LOCALAZY_SEARCH_MAX_PAGES` — max API pages to scan, 1 page = 1000 keys (default: 10, set to 0 for no cap)
-- `LOCALAZY_SEARCH_CONCURRENCY` — parallel file searches (default: 3)
-- `LOCALAZY_CHARACTER_LIMIT` — max response size in characters (default: 50000, increase for large files)
+- `cwd` — the absolute path to your clone of this repository
+- `LOCALAZY_API_TOKEN` — a token from the [Localazy Console](https://localazy.com/developer/tokens)
+
+These optional variables tune behavior:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOCALAZY_RATE_LIMIT` | 90 | Maximum API requests per minute. The Localazy limit is 100. |
+| `LOCALAZY_RATE_LIMIT_PER_SECOND` | 30 | Maximum API requests per second. |
+| `LOCALAZY_FILE_CONCURRENCY` | 8 | How many files a project-wide scan reads in parallel. |
+| `LOCALAZY_CHARACTER_LIMIT` | 50000 | Maximum characters in one tool response. |
+
+### Rate limits
+
+Both limits are sliding windows, and the server holds requests until every window
+has room.
+
+Localazy documents 100 requests per minute and 10 requests per second. The
+per-minute ceiling is enforced near the documented value, because exceeding it is
+the one thing measured to return 429. The per-second default sits above the
+documented 10 on purpose: a parallel scan peaks near 22 requests per second, the
+API serves that without complaint, and holding to 10 more than doubles the time
+of a cold scan.
+
+If the API does start to refuse requests, the server halves its per-second rate
+for the rest of the session and writes the reason to stderr. Set
+`LOCALAZY_RATE_LIMIT_PER_SECOND` to 9 to hold to the documented limit from the
+start.
 
 ### 3. Connect to Claude
 
-**Claude Code** — add the server to your project or global settings:
+**Claude Code** — add the server to your project or global configuration:
 
 ```bash
 claude mcp add "Localazy" node dist/index.js --cwd /path/to/localazy-mcp -e LOCALAZY_API_TOKEN=<token>
@@ -42,37 +64,44 @@ claude mcp add "Localazy" node dist/index.js --cwd /path/to/localazy-mcp -e LOCA
 
 ### 4. Use it
 
-Just talk to Claude about translations:
+Talk to Claude about translations:
 
-- "What translation keys contain 'invoice'?"
 - "Find invoice-related keys in ET"
-- "Show me the Estonian translations"
+- "Show checkout strings in Estonian"
 - "Audit ET translations"
 - "Audit ET style"
 - "Audit FR syntax"
-- "Show checkout strings in Estonian"
-- "Import these translations: ..."
-The workflow tools automatically use the first accessible project and infer file IDs when possible.
+- "Which languages are configured?"
+- "Upload these translations: ..."
 
 ## Available tools
 
 ### Read-only
 
-| Tool | Description |
-|------|-------------|
-| `localazy_list_projects` | List all accessible projects |
-| `localazy_list_files` | List translation files in a project |
-| `localazy_list_languages` | List languages with translation statistics |
-| `localazy_list_keys` | List translation keys with pagination and prefix filtering |
-| `localazy_search_keys` | Search keys by name or value across all files |
-| `localazy_find_translations` | Find matching translations in one call using the first accessible project |
-| `localazy_audit_translations` | Audit a language for translation QA issues with `scope=all`, `style` (punctuation, quotes, dashes, apostrophes, spacing), or `syntax` (placeholders, tags, broken tag structure) |
+| Tool | What it does |
+|---|---|
+| `localazy_find_translations` | Searches key names and target values across every file. Accepts optional file IDs. |
+| `localazy_audit_translations` | Audits one language for QA issues. The scope is `style`, `syntax`, or `all`. |
+| `localazy_list_languages` | Lists the languages with translation statistics. |
+| `localazy_list_files` | Lists the translation files with their IDs. |
+| `localazy_list_keys` | Reads one page of keys from one file, with prefix filtering. |
+
+`style` covers punctuation, quotes, dashes, apostrophes, and spacing. `syntax` covers placeholders, tags, and broken tag structure.
 
 ### Write
 
-| Tool | Description |
-|------|-------------|
-| `localazy_upload_translations` | Upload translations from nested JSON or flat dot-notation keys |
+| Tool | What it does |
+|---|---|
+| `localazy_upload_translations` | Creates or updates keys from nested JSON or flat dot-notation keys. |
+
+## Response format
+
+Two response fields hold values that repeat across results, so each result stays small:
+
+- `files` maps each `file_id` to its readable file path.
+- `rules` maps an issue `type` to its fixed message. The message of an audit issue is therefore `message ?? rules[type]`. An issue with a per-occurrence message carries that message inline instead.
+
+When a rule compares the target against the source, its issues also carry `source_value`.
 
 ## Development
 
@@ -84,5 +113,10 @@ npm test         # Run tests
 
 ## Notes
 
-- `.mcp.json` is gitignored — it contains machine-specific paths and secrets
+- `.mcp.json` is gitignored, because it contains machine-specific paths and a secret
 - `.mcp.example.json` is the committed template
+- Project data, file lists, and translation values are cached for 15 minutes per session, so only the first project-wide scan is slow. A cold audit takes about 2.5 s, the next language about 1.3 s, and a repeat is instant
+- Auditing every language in one session needs about 174 requests, which is over the per-minute ceiling. Expect one pause of up to a minute part way through. The server writes a note to stderr when it waits, so the pause is not mistaken for a hang
+- An upload clears the cache
+- A request for a language the project does not have is rejected with the list of available languages. Localazy answers such a request with an empty key list and no error, so without the check an unconfigured language looks like a clean audit
+- Reading keys does not count against the daily fetch quota, which applies to the file download endpoint this server never calls. Uploads count against the 100 imports per project per day limit

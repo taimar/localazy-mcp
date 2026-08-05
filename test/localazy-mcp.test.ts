@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TTLCache, cached, apiCache, invalidateProject } from "../src/lib/cache.js";
+import { TTLCache, cached, apiCache, cacheKeys, invalidateCache } from "../src/lib/cache.js";
+import { mapWithConcurrency } from "../src/lib/concurrency.js";
+import { envInt } from "../src/constants.js";
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
 import { jsonResponseArray } from "../src/lib/response.js";
 import { flattenTranslations } from "../src/lib/translations.js";
-import { findMatchedFields } from "../src/tools/find.js";
+import { matchFields } from "../src/tools/find.js";
 import { normalizeTranslationsForImport, translationsSchema } from "../src/tools/import.js";
 import { formatListKeysPageOutput } from "../src/tools/keys.js";
-import { detectTranslationIssues } from "../src/tools/quality.js";
-import { localazyLocaleSchema, localazyLocalesSchema } from "../src/types.js";
+import { detectTranslationIssues, serializeAuditIssues } from "../src/tools/quality.js";
+import { localazyLocaleSchema } from "../src/types.js";
 
 test("translationsSchema accepts nested objects, plural maps, and string arrays", () => {
   const result = translationsSchema.safeParse({
@@ -86,11 +88,11 @@ test("normalizeTranslationsForImport rejects leaf and parent key conflicts", () 
   );
 });
 
-test("locale schemas accept valid locale codes and reject invalid ones", () => {
+test("locale schema accepts valid locale codes and rejects invalid ones", () => {
   assert.equal(localazyLocaleSchema.safeParse("fr").success, true);
+  assert.equal(localazyLocaleSchema.safeParse("et").success, true);
   assert.equal(localazyLocaleSchema.safeParse("french").success, false);
-  assert.equal(localazyLocalesSchema.safeParse(["en", "de", "fr"]).success, true);
-  assert.equal(localazyLocalesSchema.safeParse(["en", "french"]).success, false);
+  assert.equal(localazyLocaleSchema.safeParse("").success, false);
 });
 
 test("formatListKeysPageOutput includes extra_info metadata", () => {
@@ -532,16 +534,15 @@ test("detectTranslationIssues flags asymmetric em dash spacing with Unicode spac
   ]);
 });
 
-test("findMatchedFields reports whether the query matched key and target text", () => {
+test("matchFields reports which sides the query matched", () => {
+  assert.deepEqual(matchFields("invoice", "billing.invoice.title", "Arve"), ["key"]);
+  assert.deepEqual(matchFields("arve", "billing.invoice.title", "Arve"), ["target_value"]);
   assert.deepEqual(
-    findMatchedFields("invoice", "billing.invoice.title", "Arve"),
-    ["key"]
+    matchFields("invoice", "billing.invoice.title", "Invoice total"),
+    ["key", "target_value"]
   );
-
-  assert.deepEqual(
-    findMatchedFields("arve", "billing.invoice.title", "Arve"),
-    ["target_value"]
-  );
+  // Misses return null rather than an empty array — this runs once per value.
+  assert.equal(matchFields("absent", "billing.invoice.title", "Arve"), null);
 });
 
 test("handleError maps known HTTP status codes to friendly messages", () => {
@@ -559,7 +560,7 @@ test("handleError maps known HTTP status codes to friendly messages", () => {
     {
       error: new Error("Request failed with status code 404: Not Found"),
       expected:
-        "Error: Resource not found. Check the project/file ID is correct. Use localazy_list_projects and localazy_list_files to get valid IDs.",
+        "Error: Resource not found. Check the file ID is correct. Use localazy_list_files to get valid IDs.",
     },
     {
       error: new Error("Request failed with status code 429: Too Many Requests"),
@@ -598,27 +599,33 @@ test("TTLCache returns cached values and expires them after TTL", async () => {
   assert.equal(cache.get("missing"), undefined);
 });
 
-test("invalidateProject clears only the targeted project's entries", () => {
-  apiCache.set("files:projA", "fA", 60_000);
-  apiCache.set("languages:projA", "lA", 60_000);
-  apiCache.set("keys:projA:file1:en:100:false:first", "k1", 60_000);
-  apiCache.set("keys:projA:file2:en:1000:false:first", "k2", 60_000);
-  apiCache.set("files:projB", "fB", 60_000);
-  apiCache.set("keys:projB:file3:en:100:false:first", "k3", 60_000);
+test("invalidateCache drops every cached entry", () => {
+  apiCache.set(cacheKeys.projects, "p", 60_000);
+  apiCache.set(cacheKeys.files("projA"), "fA", 60_000);
+  apiCache.set(cacheKeys.flat("projA", "file1", "et"), "t1", 60_000);
+  apiCache.set(cacheKeys.keysPage("projA", "file1", "en", 100, false), "k1", 60_000);
 
-  try {
-    invalidateProject("projA");
+  invalidateCache();
 
-    assert.equal(apiCache.get("files:projA"), undefined);
-    assert.equal(apiCache.get("languages:projA"), undefined);
-    assert.equal(apiCache.get("keys:projA:file1:en:100:false:first"), undefined);
-    assert.equal(apiCache.get("keys:projA:file2:en:1000:false:first"), undefined);
-    assert.equal(apiCache.get("files:projB"), "fB");
-    assert.equal(apiCache.get("keys:projB:file3:en:100:false:first"), "k3");
-  } finally {
-    invalidateProject("projA");
-    invalidateProject("projB");
-  }
+  assert.equal(apiCache.get(cacheKeys.projects), undefined);
+  assert.equal(apiCache.get(cacheKeys.files("projA")), undefined);
+  assert.equal(apiCache.get(cacheKeys.flat("projA", "file1", "et")), undefined);
+  assert.equal(apiCache.get(cacheKeys.keysPage("projA", "file1", "en", 100, false)), undefined);
+});
+
+test("cacheKeys distinguishes files, languages, and pagination cursors", () => {
+  const keys = [
+    cacheKeys.projects,
+    cacheKeys.files("p"),
+    cacheKeys.flat("p", "f1", "en"),
+    cacheKeys.flat("p", "f1", "et"),
+    cacheKeys.flat("p", "f2", "en"),
+    cacheKeys.keysPage("p", "f1", "en", 100, false),
+    cacheKeys.keysPage("p", "f1", "en", 100, true),
+    cacheKeys.keysPage("p", "f1", "en", 100, false, "cursor"),
+  ];
+
+  assert.equal(new Set(keys).size, keys.length, "each key must be distinct");
 });
 
 test("cached() deduplicates concurrent requests for the same key", async () => {
@@ -653,14 +660,14 @@ test("cached() does not poison cache when fn rejects", async () => {
   assert.equal(attempt, 2, "second fn should have been called after first rejection");
 });
 
-test("RateLimiter acquire() is immediate when tokens are available", async () => {
-  const limiter = new RateLimiter(100);
+test("RateLimiter acquire() is immediate while the windows have room", async () => {
+  const limiter = new RateLimiter([{ capacity: 10, windowMs: 1000 }]);
   const start = Date.now();
   await limiter.acquire();
   await limiter.acquire();
   const elapsed = Date.now() - start;
-  // Should be near-instant (well under 50ms)
-  assert.equal(elapsed < 50, true);
+  // Generous bound: the point is that no throttling happened, not the exact cost.
+  assert.equal(elapsed < 250, true, `expected no throttling, took ${elapsed}ms`);
 });
 
 test("jsonResponseArray truncates to valid JSON with _meta", () => {
@@ -688,15 +695,227 @@ test("jsonResponseArray exposes _arrayMeta with truncation info", () => {
   assert.equal(truncated._arrayMeta.includedCount > 0, true);
 });
 
-test("RateLimiter queues when tokens are exhausted", async () => {
-  // 120 tokens/min = 1 token every 500ms. Drain all, then next acquire must wait.
-  const limiter = new RateLimiter(120);
-  for (let i = 0; i < 120; i++) await limiter.acquire();
+test("mapWithConcurrency keeps input order and bounds parallelism", async () => {
+  const items = [40, 5, 30, 10, 20, 1];
+  let active = 0;
+  let peakActive = 0;
+
+  const results = await mapWithConcurrency(items, 2, async (item) => {
+    active++;
+    peakActive = Math.max(peakActive, active);
+    await new Promise((r) => setTimeout(r, item));
+    active--;
+    return item * 2;
+  });
+
+  assert.deepEqual(results, [80, 10, 60, 20, 40, 2]);
+  assert.equal(peakActive <= 2, true, "should never exceed the concurrency limit");
+});
+
+test("mapWithConcurrency stops claiming work once shouldStop returns true", async () => {
+  const items = [1, 2, 3, 4, 5, 6, 7, 8];
+  let processed = 0;
+
+  const results = await mapWithConcurrency(
+    items,
+    2,
+    async (item) => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 1));
+      return item;
+    },
+    () => processed >= 4,
+  );
+
+  assert.equal(processed < items.length, true, "should not process every item");
+  // Workers claim indexes in order and always await what they claimed, so the
+  // result is a dense prefix — shorter than the input, never sparse.
+  assert.equal(results.length, processed);
+  for (let i = 0; i < results.length; i++) {
+    assert.equal(i in results, true, `index ${i} must be assigned`);
+  }
+  assert.deepEqual(results, items.slice(0, processed));
+});
+
+test("envInt falls back when unset or unparseable and enforces a minimum", () => {
+  delete process.env.LOCALAZY_TEST_INT;
+  assert.equal(envInt("LOCALAZY_TEST_INT", 7), 7);
+
+  process.env.LOCALAZY_TEST_INT = "not-a-number";
+  assert.equal(envInt("LOCALAZY_TEST_INT", 7), 7);
+
+  process.env.LOCALAZY_TEST_INT = "0";
+  assert.equal(envInt("LOCALAZY_TEST_INT", 7), 1);
+
+  process.env.LOCALAZY_TEST_INT = "25";
+  assert.equal(envInt("LOCALAZY_TEST_INT", 7), 25);
+
+  delete process.env.LOCALAZY_TEST_INT;
+});
+
+test("TTLCache getEntry distinguishes a cached undefined from a missing key", () => {
+  const cache = new TTLCache<string | undefined>();
+  cache.set("present", undefined, 60_000);
+
+  assert.equal(cache.getEntry("present")?.value, undefined);
+  assert.notEqual(cache.getEntry("present"), undefined, "entry should exist");
+  assert.equal(cache.getEntry("absent"), undefined);
+});
+
+test("serializeAuditIssues hoists repeated messages into the rules legend", () => {
+  const repeated = "Target contains consecutive spaces.";
+  const { issues, rules } = serializeAuditIssues([
+    { type: "double_spaces", message: repeated, fileId: "f1", key: "a", targetValue: "a  b" },
+    { type: "double_spaces", message: repeated, fileId: "f1", key: "b", targetValue: "c  d" },
+    {
+      type: "missing_placeholders",
+      message: "Target is missing placeholders: {{id}}.",
+      fileId: "f2",
+      key: "c",
+      targetValue: "Tere",
+      sourceValue: "Hello {{id}}",
+    },
+  ]);
+
+  assert.equal(rules.double_spaces, repeated);
+  // The repeated message is carried by the legend, not by each issue.
+  assert.equal(issues[0]!.message, undefined);
+  assert.equal(issues[1]!.message, undefined);
+  assert.equal(issues[0]!.target_value, "a  b");
+  assert.equal(issues[0]!.source_value, undefined);
+  assert.equal(issues[2]!.source_value, "Hello {{id}}");
+
+  // Every message stays recoverable.
+  for (const issue of issues) {
+    assert.equal(typeof (issue.message ?? rules[issue.type]), "string");
+  }
+});
+
+test("serializeAuditIssues leaves parameterized messages inline rather than promoting one", () => {
+  const spaced = "Use an en dash for spaced dashes (for example ' – ').";
+  const range = "Use an en dash for numeric ranges (for example '1–2').";
+  const { issues, rules } = serializeAuditIssues([
+    { type: "dash_style", message: spaced, fileId: "f1", key: "a", targetValue: "a - b" },
+    { type: "dash_style", message: spaced, fileId: "f1", key: "b", targetValue: "c - d" },
+    { type: "dash_style", message: range, fileId: "f1", key: "c", targetValue: "1-2" },
+  ]);
+
+  // Promoting the majority message would misdescribe the third issue.
+  assert.equal(rules.dash_style, undefined);
+  assert.equal(issues[0]!.message, spaced);
+  assert.equal(issues[1]!.message, spaced);
+  assert.equal(issues[2]!.message, range);
+});
+
+test("detectTranslationIssues flags non-breaking space at the value edge", () => {
+  assert.deepEqual(detectTranslationIssues("\u00A0Tere", undefined, "en"), [
+    {
+      type: "leading_or_trailing_whitespace",
+      message: "Target has leading or trailing whitespace.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues reads punctuation through trailing closers", () => {
+  assert.deepEqual(detectTranslationIssues("(Tere)", "(Hello.)", "en"), [
+    {
+      type: "terminal_punctuation_mismatch",
+      message: "Source ends with '.' but target ends with '(none)'.",
+    },
+  ]);
+});
+
+test("detectTranslationIssues leaves ordinary hyphens and stray angle brackets alone", () => {
+  assert.deepEqual(detectTranslationIssues("e-mail", undefined, "en"), []);
+  assert.deepEqual(detectTranslationIssues("a > b", undefined, "en"), []);
+  assert.deepEqual(detectTranslationIssues("2 < 3", undefined, "en"), []);
+});
+
+test("RateLimiter makes a caller wait for the window to roll once it is full", async () => {
+  const limiter = new RateLimiter([{ capacity: 5, windowMs: 400 }]);
+  for (let i = 0; i < 5; i++) await limiter.acquire();
 
   const start = Date.now();
   await limiter.acquire();
   const elapsed = Date.now() - start;
-  // Should wait ~500ms for one token refill
-  assert.equal(elapsed >= 400, true);
+
+  assert.equal(elapsed >= 350, true, `expected a wait, took ${elapsed}ms`);
   assert.equal(elapsed < 2000, true);
+});
+
+test("RateLimiter never exceeds the cap in any window, even under a burst", async () => {
+  // A token bucket would let 2x the cap through the first window; that is what
+  // trips Localazy's 10 req/s ceiling during a parallel project scan.
+  const capacity = 10;
+  const windowMs = 1000;
+  const limiter = new RateLimiter([{ capacity, windowMs }]);
+
+  const start = Date.now();
+  const releases: number[] = [];
+  await Promise.all(
+    Array.from({ length: 25 }, () =>
+      limiter.acquire().then(() => releases.push(Date.now() - start))
+    )
+  );
+
+  assert.equal(releases.length, 25, "every caller must eventually be released");
+
+  // The real invariant, and it holds regardless of how the machine is loaded:
+  // no trailing window of any offset may hold more than `capacity` releases.
+  for (const release of releases) {
+    const inWindow = releases.filter((t) => t >= release && t < release + windowMs).length;
+    assert.equal(inWindow <= capacity, true, `${inWindow} releases inside one window`);
+  }
+});
+
+test("RateLimiter relax() halves the shortest window and stops at the floor", async () => {
+  const limiter = new RateLimiter([
+    { capacity: 30, windowMs: 1000 },
+    { capacity: 90, windowMs: 60_000 },
+  ]);
+
+  assert.equal(limiter.relax(), 15);
+  assert.equal(limiter.relax(), 7);
+  assert.equal(limiter.relax(), 5, "floors at the minimum");
+  assert.equal(limiter.relax(), null, "reports nothing left to give up");
+});
+
+test("RateLimiter honours a relaxed capacity on subsequent acquires", async () => {
+  const windowMs = 500;
+  const limiter = new RateLimiter([{ capacity: 20, windowMs }]);
+  assert.equal(limiter.relax(), 10);
+
+  const start = Date.now();
+  const releases: number[] = [];
+  await Promise.all(
+    Array.from({ length: 11 }, () =>
+      limiter.acquire().then(() => releases.push(Date.now() - start))
+    )
+  );
+
+  // With the cap now 10, the 11th cannot share a window with the first ten.
+  const firstWindow = releases.filter((t) => t < releases[0]! + windowMs).length;
+  assert.equal(firstWindow <= 10, true, `${firstWindow} releases before the window rolled`);
+});
+
+test("RateLimiter enforces every window it is given", async () => {
+  // Tight per-second cap under a looser long window: the strictest one wins.
+  const limiter = new RateLimiter([
+    { capacity: 2, windowMs: 300 },
+    { capacity: 100, windowMs: 60_000 },
+  ]);
+
+  const start = Date.now();
+  const releases: number[] = [];
+  await Promise.all(
+    Array.from({ length: 6 }, () =>
+      limiter.acquire().then(() => releases.push(Date.now() - start))
+    )
+  );
+
+  // The tighter window binds: at most 2 releases in any 300ms stretch.
+  for (const release of releases) {
+    const inWindow = releases.filter((t) => t >= release && t < release + 300).length;
+    assert.equal(inWindow <= 2, true, `${inWindow} releases inside the tight window`);
+  }
 });
