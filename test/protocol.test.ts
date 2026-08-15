@@ -42,20 +42,22 @@ const MODERN_META = {
 };
 
 type Response = { result?: any; error?: { code: number; message: string } };
+type Pending = { resolve: (value: Response) => void; reject: (error: Error) => void };
 
 /** A live stdio connection to the server, speaking line-delimited JSON-RPC. */
 class Connection {
   private child: ChildProcessWithoutNullStreams;
-  private pending = new Map<number, (value: Response) => void>();
+  private pending = new Map<number, Pending>();
   private buffer = "";
   private stderr = "";
+  private violation: string | null = null;
   private nextId = 1;
 
-  constructor() {
+  constructor(args: string[] = ["--import", "tsx", SERVER]) {
     const env = { ...process.env };
     delete env.LOCALAZY_API_TOKEN;
 
-    this.child = spawn(process.execPath, ["--import", "tsx", SERVER], { env });
+    this.child = spawn(process.execPath, args, { env });
 
     // Kept so a server that dies on startup reports its reason instead of
     // surfacing as an unexplained send timeout.
@@ -68,26 +70,46 @@ class Connection {
       this.buffer = lines.pop()!; // Trailing fragment; the rest are complete.
 
       for (const line of lines) {
+        if (!line) continue; // An artifact of the split, not output.
+
+        // stdout carries the JSON-RPC stream and nothing else, so a stray
+        // console.log in the server breaks every real client. It has to break
+        // these tests too, rather than being stepped over until a valid
+        // response arrives. Diagnostics belong on stderr.
         let message: Response & { id?: number };
         try {
           message = JSON.parse(line);
         } catch {
-          continue; // Blank line, or output the framing does not own.
+          this.abort(`server wrote a non-JSON line to stdout: ${JSON.stringify(line)}`);
+          return;
         }
-        if (message.id === undefined) continue;
+        if (message.id === undefined) continue; // A notification: nothing to correlate.
 
-        const resolve = this.pending.get(message.id);
-        if (!resolve) continue;
+        const pending = this.pending.get(message.id);
+        if (!pending) continue;
         this.pending.delete(message.id);
-        resolve(message);
+        pending.resolve(message);
       }
     });
+  }
+
+  /** Fails every waiting request, and every later one, with the same reason. */
+  private abort(reason: string): void {
+    this.violation ??= reason;
+    for (const pending of this.pending.values()) pending.reject(new Error(reason));
+    this.pending.clear();
   }
 
   send(method: string, params: unknown = {}): Promise<Response> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
+      if (this.violation) {
+        reject(new Error(this.violation));
+        return;
+      }
+
       const timer = setTimeout(() => {
+        this.pending.delete(id);
         const detail = this.stderr.trim();
         reject(
           new Error(
@@ -97,9 +119,15 @@ class Connection {
         );
       }, 20_000);
 
-      this.pending.set(id, (value) => {
-        clearTimeout(timer);
-        resolve(value);
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
       });
       this.child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
@@ -206,6 +234,18 @@ describe("protocol", { concurrency: true }, () => {
       legacyNames,
       "one factory serves both eras, so neither may expose a tool the other does not",
     );
+  });
+
+  test("a server that writes junk to stdout fails instead of being tolerated", { timeout: 30_000 }, async (t) => {
+    // Guards the harness itself. If this ever passes by skipping the bad line,
+    // every other test in this file goes quiet about a corrupted stream.
+    const connection = new Connection([
+      "-e",
+      "console.log('starting'); setInterval(() => {}, 1000);",
+    ]);
+    t.after(() => connection.close());
+
+    await assert.rejects(() => connection.send("tools/list"), /stdout/);
   });
 
   test("the upload tool is advertised as destructive and non-idempotent", { timeout: 30_000 }, async (t) => {
