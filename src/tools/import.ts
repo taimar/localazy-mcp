@@ -4,7 +4,7 @@ import { invalidateCache } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
-import { withWriteRetry } from "../lib/retry.js";
+import { isOutcomeUnknown, withWriteRetry } from "../lib/retry.js";
 import { resolveProject } from "../lib/translations.js";
 
 type TranslationValue = string | string[] | { [key: string]: TranslationValue };
@@ -177,6 +177,17 @@ Cannot delete keys — that requires the Localazy web UI.`,
           }));
 
           return jsonResponse(result);
+        } catch (error) {
+          // The generic message reads as "nothing happened", and an agent that
+          // believes it sends the import again. Only a write that may have
+          // landed gets the warning, so a rejected one is not made to look
+          // doubtful.
+          const message = handleError(error);
+          return errorResponse(
+            isOutcomeUnknown(error)
+              ? `${message} This error does not show whether Localazy applied the upload. Check the file in Localazy before you send it again.`
+              : message
+          );
         } finally {
           // Also on failure: a write that reported an error may still have
           // landed, so whatever was cached before it is suspect either way.

@@ -29,6 +29,20 @@ export function isRetryable(error: unknown, policy: RetryPolicy): boolean {
 export type RetryPolicy = "read" | "write";
 
 /**
+ * Whether a failed write may already have been applied.
+ *
+ * A 4xx says Localazy rejected the request and a 429 says it never looked at
+ * one. Both are certain. A 5xx or a dropped connection is not: the server can
+ * have accepted the import and lost only the response. A caller told just
+ * "socket hang up" reads that as "nothing happened" and sends it again, which
+ * is the duplicate import this distinction exists to prevent.
+ */
+export function isOutcomeUnknown(error: unknown): boolean {
+  const code = getStatusCode(error);
+  return code === null || code >= 500;
+}
+
+/**
  * Acquires a rate-limiter token, then calls `fn`.
  * Uses longer backoff for 429 to let the per-minute window reset.
  */

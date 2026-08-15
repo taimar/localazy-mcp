@@ -94,7 +94,25 @@ class Connection {
           this.abort(`server wrote a non-JSON-RPC line to stdout: ${JSON.stringify(line)}`);
           return;
         }
-        if (message.id === undefined) continue; // A notification: nothing to correlate.
+        if (message.id === undefined) {
+          // A notification carries no id, but it still has to name a method.
+          if (typeof message.method !== "string") {
+            this.abort(`server wrote a line to stdout with neither id nor method: ${JSON.stringify(line)}`);
+            return;
+          }
+          continue; // Nothing to correlate.
+        }
+
+        // An id together with a method is the server asking the client
+        // something, which is also not a response to anything we sent.
+        if (typeof message.method === "string") continue;
+
+        // What is left has to be a response, and a response answers with
+        // exactly one of result or error.
+        if (("result" in message) === ("error" in message)) {
+          this.abort(`server wrote a response to stdout without exactly one of result and error: ${JSON.stringify(line)}`);
+          return;
+        }
 
         const pending = this.pending.get(message.id);
         if (!pending) continue;
@@ -264,6 +282,8 @@ describe("protocol", () => {
   for (const [label, junk] of [
     ["a non-JSON line", "starting"],
     ["valid JSON that is not JSON-RPC", "{}"],
+    ["a message with neither id nor method", '{"jsonrpc":"2.0"}'],
+    ["a response with neither result nor error", '{"jsonrpc":"2.0","id":1}'],
   ]) {
     test(`a server that writes ${label} to stdout fails`, { timeout: 30_000 }, async (t) => {
       const connection = new Connection([

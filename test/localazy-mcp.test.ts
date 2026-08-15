@@ -5,7 +5,7 @@ import { mapWithConcurrency } from "../src/lib/concurrency.js";
 import { envInt } from "../src/constants.js";
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
-import { isRetryable, withRetry, withWriteRetry } from "../src/lib/retry.js";
+import { isOutcomeUnknown, isRetryable, withRetry, withWriteRetry } from "../src/lib/retry.js";
 import { jsonResponseArray } from "../src/lib/response.js";
 import { flattenTranslations } from "../src/lib/translations.js";
 import { matchFields } from "../src/tools/find.js";
@@ -1144,4 +1144,18 @@ test("singleflight still shares one request when nothing invalidates", async () 
   assert.equal(a, "value");
   assert.equal(b, "value");
   assert.equal(calls, 1, "concurrent readers of one key share a single call");
+});
+
+test("only an uncertain write failure warns that the upload may have landed", () => {
+  // A 5xx or a dropped connection cannot say whether Localazy applied the
+  // import, so the caller has to check before sending it again.
+  assert.equal(isOutcomeUnknown(apiError(500)), true);
+  assert.equal(isOutcomeUnknown(apiError(502)), true);
+  assert.equal(isOutcomeUnknown(new Error("socket hang up")), true);
+
+  // These are certain: Localazy rejected the request, or never looked at it.
+  assert.equal(isOutcomeUnknown(apiError(400)), false);
+  assert.equal(isOutcomeUnknown(apiError(401)), false);
+  assert.equal(isOutcomeUnknown(apiError(404)), false);
+  assert.equal(isOutcomeUnknown(apiError(429)), false);
 });
