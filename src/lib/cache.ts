@@ -98,6 +98,19 @@ export const cacheKeys = {
     `keys:${projectId}:${fileId}:${lang}:${limit}:${extraInfo}:${cursor ?? "first"}`,
 } as const;
 
+/** In-flight requests for singleflight deduplication. */
+const inflight = new Map<string, Promise<unknown>>();
+
+/**
+ * Bumped by every invalidation.
+ *
+ * Clearing the stored entries is not enough on its own. A fetch that started
+ * before an upload can settle after it, and it carries pre-upload values, so it
+ * must not write them back. Comparing the generation it started in against the
+ * current one is what tells those results apart.
+ */
+let generation = 0;
+
 /**
  * Drop everything cached (call after an upload).
  *
@@ -107,10 +120,11 @@ export const cacheKeys = {
  */
 export function invalidateCache(): void {
   apiCache.clear();
+  generation++;
+  // Drop the in-flight requests too. They predate the upload, so a read that
+  // arrives now has to start its own instead of joining one of them.
+  inflight.clear();
 }
-
-/** In-flight requests for singleflight deduplication. */
-const inflight = new Map<string, Promise<unknown>>();
 
 /**
  * Fetch with caching. Returns the cached value if present and not expired,
@@ -126,13 +140,19 @@ export async function cached<T>(key: string, fn: () => Promise<T>, ttlMs = CACHE
   const pending = inflight.get(key) as Promise<T> | undefined;
   if (pending !== undefined) return pending;
 
+  const startedAt = generation;
   const promise = fn().then(
     (value) => {
-      apiCache.set(key, value, ttlMs);
+      // An upload landed while this was in flight, so the value is already out
+      // of date. The caller that asked before the upload still gets it; the
+      // cache does not, or the next reader would see pre-upload data.
+      if (generation === startedAt) apiCache.set(key, value, ttlMs);
       return value;
     },
   ).finally(() => {
-    inflight.delete(key);
+    // Clear this entry only. An invalidation may have emptied the map, and a
+    // newer request may already hold the key.
+    if (inflight.get(key) === promise) inflight.delete(key);
   });
 
   inflight.set(key, promise);

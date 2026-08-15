@@ -80,11 +80,18 @@ class Connection {
         // console.log in the server breaks every real client. It has to break
         // these tests too, rather than being stepped over until a valid
         // response arrives. Diagnostics belong on stderr.
-        let message: Response & { id?: number };
+        let message: any;
         try {
           message = JSON.parse(line);
         } catch {
           this.abort(`server wrote a non-JSON line to stdout: ${JSON.stringify(line)}`);
+          return;
+        }
+        // Parsing is not enough. `{}` or a quoted string is valid JSON and
+        // would otherwise pass for a notification. The SDK never batches, so
+        // an array is junk here as well.
+        if (message?.jsonrpc !== "2.0") {
+          this.abort(`server wrote a non-JSON-RPC line to stdout: ${JSON.stringify(line)}`);
           return;
         }
         if (message.id === undefined) continue; // A notification: nothing to correlate.
@@ -247,17 +254,24 @@ describe("protocol", { concurrency: true }, () => {
     );
   });
 
-  test("a server that writes junk to stdout fails instead of being tolerated", { timeout: 30_000 }, async (t) => {
-    // Guards the harness itself. If this ever passes by skipping the bad line,
-    // every other test in this file goes quiet about a corrupted stream.
-    const connection = new Connection([
-      "-e",
-      "console.log('starting'); setInterval(() => {}, 1000);",
-    ]);
-    t.after(() => connection.close());
+  // Guards the harness itself. If either of these passes by skipping the bad
+  // line, every other test in this file goes quiet about a corrupted stream.
+  // The second is the one plain JSON.parse cannot catch: it parses, and without
+  // a JSON-RPC check it reads as a notification.
+  for (const [label, junk] of [
+    ["a non-JSON line", "starting"],
+    ["valid JSON that is not JSON-RPC", "{}"],
+  ]) {
+    test(`a server that writes ${label} to stdout fails`, { timeout: 30_000 }, async (t) => {
+      const connection = new Connection([
+        "-e",
+        `console.log(${JSON.stringify(junk)}); setInterval(() => {}, 1000);`,
+      ]);
+      t.after(() => connection.close());
 
-    await assert.rejects(() => connection.send("tools/list"), /stdout/);
-  });
+      await assert.rejects(() => connection.send("tools/list"), /stdout/);
+    });
+  }
 
   test("the upload tool is advertised as destructive and non-idempotent", { timeout: 30_000 }, async (t) => {
     const connection = new Connection();

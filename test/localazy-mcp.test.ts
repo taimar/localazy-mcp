@@ -1095,3 +1095,53 @@ test("withRetry gives up immediately on an error that will not change", async ()
 
   assert.equal(calls, 1);
 });
+
+test("an upload stops an in-flight read from caching pre-upload values", async () => {
+  invalidateCache();
+
+  let finish!: (value: string) => void;
+  const read = cached("race:flat", () => new Promise<string>((r) => { finish = r; }));
+
+  // The upload lands while the read is still out.
+  invalidateCache();
+  finish("before-upload");
+
+  // The caller that asked first still gets its answer: it read before the
+  // upload, and cancelling that is not this cache's job.
+  assert.equal(await read, "before-upload");
+
+  // The cache must not keep it, or the next reader sees pre-upload data.
+  assert.equal(apiCache.get("race:flat"), undefined);
+});
+
+test("a read after an upload does not join a request that predates it", async () => {
+  invalidateCache();
+
+  let finish!: (value: string) => void;
+  const before = cached("race:join", () => new Promise<string>((r) => { finish = r; }));
+
+  invalidateCache();
+  const after = cached("race:join", () => Promise.resolve("after-upload"));
+
+  finish("before-upload");
+
+  assert.equal(await before, "before-upload");
+  assert.equal(await after, "after-upload", "the later read must not be served stale work");
+  assert.equal(apiCache.get("race:join"), "after-upload");
+});
+
+test("singleflight still shares one request when nothing invalidates", async () => {
+  invalidateCache();
+
+  let calls = 0;
+  const fetch = () => {
+    calls++;
+    return Promise.resolve("value");
+  };
+
+  const [a, b] = await Promise.all([cached("race:share", fetch), cached("race:share", fetch)]);
+
+  assert.equal(a, "value");
+  assert.equal(b, "value");
+  assert.equal(calls, 1, "concurrent readers of one key share a single call");
+});

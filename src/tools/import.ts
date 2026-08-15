@@ -161,22 +161,29 @@ Cannot delete keys — that requires the Localazy web UI.`,
         const api = getClient();
         const project = await resolveProject();
         const normalizedTranslations = normalizeTranslationsForImport(translations);
-        const result = await withWriteRetry(() => api.import.json({
-          project: project.id,
-          json: normalizedTranslations,
-          fileOptions: {
-            name: file_name,
-            ...(file_path ? { path: file_path } : {}),
-          },
-          i18nOptions: {
-            forceCurrent: force_current,
-            forceSource: force_source,
-            importAsNew: import_as_new,
-          },
-        }));
+        try {
+          const result = await withWriteRetry(() => api.import.json({
+            project: project.id,
+            json: normalizedTranslations,
+            fileOptions: {
+              name: file_name,
+              ...(file_path ? { path: file_path } : {}),
+            },
+            i18nOptions: {
+              forceCurrent: force_current,
+              forceSource: force_source,
+              importAsNew: import_as_new,
+            },
+          }));
 
-        invalidateCache();
-        return jsonResponse(result);
+          return jsonResponse(result);
+        } finally {
+          // Also on failure. A write that reported an error may still have
+          // landed, so everything cached from before it is suspect either way,
+          // and the caller checking whether it landed has to reach Localazy
+          // rather than read this session's copy of the old values.
+          invalidateCache();
+        }
       } catch (error) {
         return errorResponse(handleError(error));
       }
