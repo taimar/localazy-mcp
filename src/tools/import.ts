@@ -4,7 +4,7 @@ import { invalidateCache } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
-import { withRetry } from "../lib/retry.js";
+import { withWriteRetry } from "../lib/retry.js";
 import { resolveProject } from "../lib/translations.js";
 
 type TranslationValue = string | string[] | { [key: string]: TranslationValue };
@@ -138,9 +138,10 @@ Cannot delete keys — that requires the Localazy web UI.`,
       // Destructive because an upload overwrites the previous value of any key
       // it names, and `force_source` overwrites source content that a human has
       // already edited. Not idempotent because every call creates a new import
-      // batch and spends one of the project's 100 imports per day — and
-      // `withRetry` retries 5xx and network failures, so a call that fails after
-      // Localazy accepted it spends several.
+      // batch and spends one of the project's 100 imports per day, which is why
+      // this is the one call that uses `withWriteRetry`: a 5xx or a dropped
+      // connection cannot say whether Localazy accepted the import, so retrying
+      // it is not safe.
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -160,7 +161,7 @@ Cannot delete keys — that requires the Localazy web UI.`,
         const api = getClient();
         const project = await resolveProject();
         const normalizedTranslations = normalizeTranslationsForImport(translations);
-        const result = await withRetry(() => api.import.json({
+        const result = await withWriteRetry(() => api.import.json({
           project: project.id,
           json: normalizedTranslations,
           fileOptions: {

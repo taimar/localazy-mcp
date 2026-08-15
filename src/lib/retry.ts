@@ -7,17 +7,42 @@ function isClientError(error: unknown): boolean {
 }
 
 /**
+ * Whether a failed request may be sent again.
+ *
+ * A read may repeat on anything that looks transient, because repeating it
+ * changes nothing. A write may not: if Localazy accepted an import and only the
+ * response was lost, sending it again creates a second import batch, spends
+ * another of the project's 100 imports for the day, and can overwrite an edit
+ * made in between. A 5xx or a dropped connection cannot tell those apart.
+ *
+ * 429 is the exception. It is the one refusal that says the request was not
+ * processed, so repeating it is safe whatever the request was — and this server
+ * runs above Localazy's documented per-second limit on purpose, so writes have
+ * to survive the 429 that design expects.
+ */
+export function isRetryable(error: unknown, policy: RetryPolicy): boolean {
+  if (getStatusCode(error) === 429) return true;
+  if (policy === "write") return false;
+  return !isClientError(error);
+}
+
+export type RetryPolicy = "read" | "write";
+
+/**
  * Acquires a rate-limiter token, then calls `fn`.
- * Retries on 429, 5xx, and network failures. Does not retry other 4xx errors.
  * Uses longer backoff for 429 to let the per-minute window reset.
  */
-export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  policy: RetryPolicy = "read",
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       await rateLimiter.acquire();
       return await fn();
     } catch (error) {
-      if (attempt >= maxRetries || isClientError(error)) throw error;
+      if (attempt >= maxRetries || !isRetryable(error, policy)) throw error;
 
       const isRateLimit = getStatusCode(error) === 429;
 
@@ -38,4 +63,9 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promis
       await new Promise((r) => setTimeout(r, baseDelay + jitter));
     }
   }
+}
+
+/** Sends a write once unless Localazy refuses it outright. See {@link isRetryable}. */
+export function withWriteRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  return withRetry(fn, maxRetries, "write");
 }

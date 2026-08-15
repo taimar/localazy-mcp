@@ -5,6 +5,7 @@ import { mapWithConcurrency } from "../src/lib/concurrency.js";
 import { envInt } from "../src/constants.js";
 import { RateLimiter } from "../src/lib/rate-limiter.js";
 import { handleError } from "../src/lib/errors.js";
+import { isRetryable, withRetry, withWriteRetry } from "../src/lib/retry.js";
 import { jsonResponseArray } from "../src/lib/response.js";
 import { flattenTranslations } from "../src/lib/translations.js";
 import { matchFields } from "../src/tools/find.js";
@@ -1037,4 +1038,60 @@ test("ISSUE_TYPES covers every rule detectTranslationIssues can emit", () => {
   for (const type of emitted) {
     assert.equal(ISSUE_TYPES.includes(type), true, `${type} is missing from ISSUE_TYPES`);
   }
+});
+
+// The client throws plain Errors whose message carries the status code.
+function apiError(status: number): Error {
+  return new Error(`Request failed with status code ${status}: Failure`);
+}
+
+test("a write retries only the failure that proves nothing was written", () => {
+  // A 429 is a refusal, so the import never reached Localazy and repeating it
+  // is safe. Everything else leaves the outcome unknown: the import may have
+  // been accepted and only the response lost.
+  assert.equal(isRetryable(apiError(429), "write"), true);
+
+  assert.equal(isRetryable(apiError(500), "write"), false);
+  assert.equal(isRetryable(apiError(502), "write"), false);
+  assert.equal(isRetryable(new Error("socket hang up"), "write"), false);
+  assert.equal(isRetryable(apiError(404), "write"), false);
+});
+
+test("a read retries anything transient, because repeating it changes nothing", () => {
+  assert.equal(isRetryable(apiError(429), "read"), true);
+  assert.equal(isRetryable(apiError(500), "read"), true);
+  assert.equal(isRetryable(apiError(502), "read"), true);
+  assert.equal(isRetryable(new Error("socket hang up"), "read"), true);
+
+  // A 4xx other than 429 is the caller's fault and will fail the same way again.
+  assert.equal(isRetryable(apiError(404), "read"), false);
+  assert.equal(isRetryable(apiError(401), "read"), false);
+});
+
+test("withWriteRetry sends an import once when the outcome is unknown", async () => {
+  // The failure that matters: Localazy may have accepted the import and lost
+  // the response. A second attempt would spend another of the 100 daily
+  // imports and could overwrite an edit made in between.
+  for (const error of [apiError(500), new Error("socket hang up")]) {
+    let calls = 0;
+    await assert.rejects(() =>
+      withWriteRetry(() => {
+        calls++;
+        return Promise.reject(error);
+      })
+    );
+    assert.equal(calls, 1, `${error.message} must not be retried`);
+  }
+});
+
+test("withRetry gives up immediately on an error that will not change", async () => {
+  let calls = 0;
+  await assert.rejects(() =>
+    withRetry(() => {
+      calls++;
+      return Promise.reject(apiError(404));
+    })
+  );
+
+  assert.equal(calls, 1);
 });

@@ -132,3 +132,4 @@ npm test         # Run tests
 - An upload clears the cache
 - A request for a language the project does not have is rejected with the list of available languages. Localazy answers such a request with an empty key list and no error, so without the check an unconfigured language looks like a clean audit
 - Reading keys does not count against the daily fetch quota, which applies to the file download endpoint this server never calls. Uploads count against the 100 imports per project per day limit
+- The server sends an upload once. A 5xx or a dropped connection cannot show whether Localazy accepted the import, so the server does not retry it. It retries only a 429, because that refusal proves nothing was written
