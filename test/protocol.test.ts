@@ -31,9 +31,13 @@ const LEGACY_INIT = {
 };
 
 /**
- * The envelope a 2026-07-28 client stamps into `_meta` on every request. All
- * three keys are required: the server answers an incomplete envelope with
- * -32602, which is easy to mistake for the server lacking modern support.
+ * The envelope a 2026-07-28 client stamps into `_meta` on every request.
+ *
+ * `protocolVersion` is what selects the era: without it the server reads the
+ * request as a 2025-era opening, and `server/discover` comes back -32601.
+ * `clientCapabilities` is required, and leaving it out gives -32602, which is
+ * easy to mistake for the server lacking modern support. `clientInfo` is
+ * recommended rather than required, which the modern test below checks.
  */
 const MODERN_META = {
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -204,6 +208,13 @@ describe("protocol", { concurrency: true }, () => {
     assert.ok(names.length > 0, "tools/list must not be empty");
     assert.ok(names.includes("localazy_upload_translations"));
     assert.ok(names.includes("localazy_list_languages"));
+
+    // clientInfo is recommended, not required, so a client that omits it is
+    // still served. Leaving out clientCapabilities is what earns a -32602.
+    const { "io.modelcontextprotocol/clientInfo": _omitted, ...withoutClientInfo } = MODERN_META;
+    const anonymous = await connection.send("tools/list", { _meta: withoutClientInfo });
+    assert.equal(anonymous.error, undefined);
+    assert.deepEqual(toolNames(anonymous), names);
   });
 
   test("both protocol eras serve the same tool surface", { timeout: 30_000 }, async (t) => {

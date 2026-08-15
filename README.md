@@ -6,6 +6,10 @@ The server works with one project. It resolves that project from the API token, 
 
 ## Setup
 
+The server needs Node 20 or later, because the MCP SDK requires it. When your
+version is lower, npm prints a warning and continues. The build then succeeds
+and the server fails at run time.
+
 ### 1. Build the server
 
 ```bash
