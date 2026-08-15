@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import type { File } from "@localazy/api-client";
 import { z } from "zod";
 import { FILE_CONCURRENCY } from "../constants.js";
@@ -818,7 +818,7 @@ export function register(server: McpServer): void {
 Use for "Audit ET translations", "Audit FR style", "Audit ET syntax", "Which ET strings use straight apostrophes".
 
 Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its message as \`message ?? rules[type]\` — fixed rule text lives once in \`rules\`, and only per-occurrence messages are inline. Resolve \`file_id\` via the \`files\` map. \`source_value\` is present only for rules that compare against the source.`,
-      inputSchema: {
+      inputSchema: z.object({
         lang: localazyLocaleSchema
           .default("en")
           .describe("Language code to inspect, for example 'et'"),
@@ -830,7 +830,7 @@ Each issue carries \`type\`, \`file_id\`, \`key\` and \`target_value\`. Read its
           .min(1)
           .optional()
           .describe("Report only these issue types. Narrows 'scope' and cannot widen it"),
-      },
+      }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ lang, scope, types }) => auditTranslations(lang, scope, types)

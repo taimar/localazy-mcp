@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { invalidateCache } from "../lib/cache.js";
 import { getClient } from "../lib/client.js";
@@ -110,7 +110,7 @@ export function register(server: McpServer): void {
       description: `Create or update translation keys in a Localazy project. Returns the file ID and import batch ID.
 
 Cannot delete keys — that requires the Localazy web UI.`,
-      inputSchema: {
+      inputSchema: z.object({
         translations: translationsSchema.describe(
           'Translation data as { lang: { key: value } }. Keys may be flat dot-notation or nested; values may be strings, string arrays, or plural maps like { "one": "1 item", "other": "%d items" }. Example: { "en": { "common.greeting": "Hello" }, "de": { "common": { "greeting": "Hallo" } } }'
         ),
@@ -134,7 +134,7 @@ Cannot delete keys — that requires the Localazy web UI.`,
           .boolean()
           .default(false)
           .describe("All uploaded translations go through review"),
-      },
+      }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

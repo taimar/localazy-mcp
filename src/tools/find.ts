@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { FILE_CONCURRENCY } from "../constants.js";
 import { mapWithConcurrency } from "../lib/concurrency.js";
@@ -59,7 +59,7 @@ export function register(server: McpServer): void {
 Use for "Find invoice-related keys in ET", "Show checkout strings in Estonian", "Which keys mention 'password'".
 
 Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via the \`files\` map. Nested keys, plural forms, and string arrays are flattened, so keys look like \`common.count.other[1]\`.`,
-      inputSchema: {
+      inputSchema: z.object({
         query: z
           .string()
           .min(1)
@@ -72,7 +72,7 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
           .array(z.string())
           .optional()
           .describe("Limit the search to these file IDs (from localazy_list_files); searches all files if omitted"),
-      },
+      }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ query, lang, file_ids }) => {

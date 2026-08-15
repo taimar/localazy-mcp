@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { handleError } from "../lib/errors.js";
 import { jsonResponseArray, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
@@ -56,7 +56,7 @@ export function register(server: McpServer): void {
 Use for manual paginated browsing. To search or QA the project, prefer localazy_find_translations or localazy_audit_translations.
 
 \`prefix\` is applied after the page is fetched, so a page can come back empty while \`next\` still points at more keys.`,
-      inputSchema: {
+      inputSchema: z.object({
         file_id: z.string().describe("File ID from localazy_list_files"),
         lang: localazyLocaleSchema
           .default("en")
@@ -80,7 +80,7 @@ Use for manual paginated browsing. To search or QA the project, prefer localazy_
           .boolean()
           .default(false)
           .describe("Include key IDs, comments, deprecation, hidden flag, and length limits"),
-      },
+      }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async ({ file_id, lang, limit, next, prefix, extra_info }) => {

@@ -1,4 +1,5 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse, READ_ONLY_ANNOTATIONS } from "../lib/response.js";
 import { resolveProjectFiles } from "../lib/translations.js";
@@ -11,7 +12,7 @@ export function register(server: McpServer): void {
       description: `List the translation files, as { id, name, type, path?, module? }.
 
 Use when you need a file ID for localazy_list_keys or to narrow localazy_find_translations.`,
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: READ_ONLY_ANNOTATIONS,
     },
     async () => {
