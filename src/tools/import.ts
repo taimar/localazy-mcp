@@ -135,10 +135,16 @@ Cannot delete keys — that requires the Localazy web UI.`,
           .default(false)
           .describe("All uploaded translations go through review"),
       }),
+      // Destructive because an upload overwrites the previous value of any key
+      // it names, and `force_source` overwrites source content that a human has
+      // already edited. Not idempotent because every call creates a new import
+      // batch and spends one of the project's 100 imports per day — and
+      // `withRetry` retries 5xx and network failures, so a call that fails after
+      // Localazy accepted it spends several.
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
+        destructiveHint: true,
+        idempotentHint: false,
         openWorldHint: true,
       },
     },
