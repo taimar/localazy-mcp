@@ -178,10 +178,8 @@ Cannot delete keys — that requires the Localazy web UI.`,
 
           return jsonResponse(result);
         } finally {
-          // Also on failure. A write that reported an error may still have
-          // landed, so everything cached from before it is suspect either way,
-          // and the caller checking whether it landed has to reach Localazy
-          // rather than read this session's copy of the old values.
+          // Also on failure: a write that reported an error may still have
+          // landed, so whatever was cached before it is suspect either way.
           invalidateCache();
         }
       } catch (error) {

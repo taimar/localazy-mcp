@@ -98,18 +98,15 @@ export const cacheKeys = {
     `keys:${projectId}:${fileId}:${lang}:${limit}:${extraInfo}:${cursor ?? "first"}`,
 } as const;
 
-/** In-flight requests for singleflight deduplication. */
-const inflight = new Map<string, Promise<unknown>>();
-
 /**
- * Bumped by every invalidation.
+ * In-flight requests for singleflight deduplication.
  *
- * Clearing the stored entries is not enough on its own. A fetch that started
- * before an upload can settle after it, and it carries pre-upload values, so it
- * must not write them back. Comparing the generation it started in against the
- * current one is what tells those results apart.
+ * Membership doubles as the record of which fetches predate the last upload.
+ * An invalidation empties this map, so a fetch still holding its own entry when
+ * it settles is one that started after the upload, and only that fetch may
+ * write to the cache.
  */
-let generation = 0;
+const inflight = new Map<string, Promise<unknown>>();
 
 /**
  * Drop everything cached (call after an upload).
@@ -120,9 +117,8 @@ let generation = 0;
  */
 export function invalidateCache(): void {
   apiCache.clear();
-  generation++;
-  // Drop the in-flight requests too. They predate the upload, so a read that
-  // arrives now has to start its own instead of joining one of them.
+  // The in-flight requests go too. They carry pre-upload values, so a read
+  // arriving now has to start its own instead of joining one of them.
   inflight.clear();
 }
 
@@ -140,19 +136,18 @@ export async function cached<T>(key: string, fn: () => Promise<T>, ttlMs = CACHE
   const pending = inflight.get(key) as Promise<T> | undefined;
   if (pending !== undefined) return pending;
 
-  const startedAt = generation;
-  const promise = fn().then(
+  // Losing our entry means an upload cleared the map while this was out, so the
+  // value is already stale. The caller that asked first still receives it; only
+  // the cache refuses it, or the next reader would see pre-upload data.
+  const isCurrent = (): boolean => inflight.get(key) === promise;
+
+  const promise: Promise<T> = fn().then(
     (value) => {
-      // An upload landed while this was in flight, so the value is already out
-      // of date. The caller that asked before the upload still gets it; the
-      // cache does not, or the next reader would see pre-upload data.
-      if (generation === startedAt) apiCache.set(key, value, ttlMs);
+      if (isCurrent()) apiCache.set(key, value, ttlMs);
       return value;
     },
   ).finally(() => {
-    // Clear this entry only. An invalidation may have emptied the map, and a
-    // newer request may already hold the key.
-    if (inflight.get(key) === promise) inflight.delete(key);
+    if (isCurrent()) inflight.delete(key);
   });
 
   inflight.set(key, promise);
