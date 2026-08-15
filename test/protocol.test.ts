@@ -157,9 +157,12 @@ function toolNames(response: Response): string[] {
   return (response.result?.tools ?? []).map((tool: { name: string }) => tool.name).sort();
 }
 
-// Each test spawns its own server, so they have nothing to share and no reason
-// to queue behind each other.
-describe("protocol", { concurrency: true }, () => {
+// Sequential on purpose. These tests share nothing and are correct in parallel,
+// but starting every server at once starves the real-timer assertions in the
+// RateLimiter suite, which `node --test` runs in a parallel process, and made
+// the full suite fail about one run in ten. Nothing is lost by waiting: the
+// unit file is slower than this one, so it sets the wall time either way.
+describe("protocol", () => {
   test("a 2025-era client can initialize and list tools", { timeout: 30_000 }, async (t) => {
     const connection = new Connection();
     t.after(() => connection.close());
