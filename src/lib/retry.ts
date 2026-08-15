@@ -1,45 +1,41 @@
 import { getStatusCode } from "./errors.js";
 import { rateLimiter } from "./rate-limiter.js";
 
-function isClientError(error: unknown): boolean {
-  const code = getStatusCode(error);
-  return code !== null && code >= 400 && code < 500 && code !== 429;
-}
-
-/**
- * Whether a failed request may be sent again.
- *
- * A read may repeat on anything that looks transient, because repeating it
- * changes nothing. A write may not: if Localazy accepted an import and only the
- * response was lost, sending it again creates a second import batch, spends
- * another of the project's 100 imports for the day, and can overwrite an edit
- * made in between. A 5xx or a dropped connection cannot tell those apart.
- *
- * 429 is the exception. It is the one refusal that says the request was not
- * processed, so repeating it is safe whatever the request was — and this server
- * runs above Localazy's documented per-second limit on purpose, so writes have
- * to survive the 429 that design expects.
- */
-export function isRetryable(error: unknown, policy: RetryPolicy): boolean {
-  if (getStatusCode(error) === 429) return true;
-  if (policy === "write") return false;
-  return !isClientError(error);
-}
-
 export type RetryPolicy = "read" | "write";
 
 /**
- * Whether a failed write may already have been applied.
+ * What a failed request says about whether Localazy acted on it. Both the
+ * retry rule and the message the caller sees are read off this one split.
  *
- * A 4xx says Localazy rejected the request and a 429 says it never looked at
- * one. Both are certain. A 5xx or a dropped connection is not: the server can
- * have accepted the import and lost only the response. A caller told just
- * "socket hang up" reads that as "nothing happened" and sends it again, which
- * is the duplicate import this distinction exists to prevent.
+ * - `refused` — a 429. Localazy never looked at the request, so sending it
+ *   again is safe whatever it was. This server runs above the documented
+ *   per-second limit on purpose, so writes have to survive the 429 that
+ *   design expects.
+ * - `rejected` — any other 4xx. Localazy read the request and turned it down,
+ *   and it will turn down the same one again.
+ * - `unknown` — a 5xx, a dropped connection, or a status we do not recognise.
+ *   The import can have been accepted with only the response lost. Repeating
+ *   it would create a second import batch, spend another of the project's 100
+ *   imports for the day, and can overwrite an edit made in between.
  */
-export function isOutcomeUnknown(error: unknown): boolean {
+type Outcome = "refused" | "rejected" | "unknown";
+
+function outcomeOf(error: unknown): Outcome {
   const code = getStatusCode(error);
-  return code === null || code >= 500;
+  if (code === 429) return "refused";
+  if (code !== null && code >= 400 && code < 500) return "rejected";
+  return "unknown";
+}
+
+/** Whether a failed request may be sent again. A write repeats a refusal only. */
+export function isRetryable(error: unknown, policy: RetryPolicy): boolean {
+  const outcome = outcomeOf(error);
+  return outcome === "refused" || (outcome === "unknown" && policy === "read");
+}
+
+/** Whether a failed write may already have been applied. */
+export function isOutcomeUnknown(error: unknown): boolean {
+  return outcomeOf(error) === "unknown";
 }
 
 /**

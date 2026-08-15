@@ -178,10 +178,9 @@ Cannot delete keys — that requires the Localazy web UI.`,
 
           return jsonResponse(result);
         } catch (error) {
-          // The generic message reads as "nothing happened", and an agent that
-          // believes it sends the import again. Only a write that may have
-          // landed gets the warning, so a rejected one is not made to look
-          // doubtful.
+          // "socket hang up" reads as "nothing happened", and an agent that
+          // believes it sends the import again. Only an uncertain failure is
+          // warned about, so a rejected one is not made to look doubtful.
           const message = handleError(error);
           return errorResponse(
             isOutcomeUnknown(error)
