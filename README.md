@@ -132,7 +132,7 @@ npm test         # Run tests
 - `.mcp.json` is gitignored, because it contains machine-specific paths and a secret
 - `.mcp.example.json` is the committed template
 - Project data, file lists, and translation values are cached for 15 minutes per session, so only the first project-wide scan is slow. A cold audit takes about 2.5 s, the next language about 1.3 s, and a repeat is instant
-- Auditing every language in one session needs about 174 requests, which is over the per-minute ceiling. Expect one pause of up to a minute part way through. The server writes a note to stderr when it waits, so the pause is not mistaken for a hang
+- Auditing every language in one session needs about 203 requests (29 files × 7 languages), which is over the per-minute ceiling. Expect up to two pauses of up to a minute each. When the server waits, it writes a note to stderr, so the pause does not look like a hang
 - An upload clears the cache
 - A request for a language the project does not have is rejected with the list of available languages. Localazy answers such a request with an empty key list and no error, so without the check an unconfigured language looks like a clean audit
 - Reading keys does not count against the daily fetch quota, which applies to the file download endpoint this server never calls. Uploads count against the 100 imports per project per day limit

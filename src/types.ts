@@ -14,7 +14,7 @@ const LOCALAZY_LOCALE_SET = new Set<LocalazyLocale>(
 );
 
 const INVALID_LOCALE_MESSAGE =
-  "Use a valid Localazy locale code such as 'en', 'et', 'fi', 'fr', 'it', or 'sv'.";
+  "Use a valid Localazy locale code such as 'en', 'de', 'et', 'fi', 'fr', 'it', or 'sv'.";
 
 export const localazyLocaleSchema = z
   .string()
