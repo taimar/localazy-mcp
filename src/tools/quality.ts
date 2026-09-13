@@ -32,10 +32,12 @@ const PLACEHOLDER_PATTERN = /\{\{\s*([^{}]+?)\s*\}\}/gu;
 const TAG_PATTERN = /<\/?([A-Za-z][A-Za-z0-9-]*|\d+)(?:\s[^<>]*?)?\/?>/gu;
 const STRAIGHT_APOSTROPHE_PATTERN = /(?<=[\p{L}\p{N}\}])'(?=\p{L})/u;
 const FRENCH_NON_GUILLEMET_QUOTES_PATTERN = /["“”]/u;
-const CURLY_QUOTE_INNER_SPACE_PATTERN = new RegExp(
-  `(?:“${SPACE}|${SPACE}”|„${SPACE}|${SPACE}“)`, "u");
-const NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN = new RegExp(
-  `(?:«${SPACE}|${SPACE}»|»${SPACE}|${SPACE}«)`, "u");
+// Recognize pairs independently of locale; a different convention is not an
+// imbalance. Locale-specific French spacing is checked after pairing.
+const QUOTE_CLOSERS = new Map([
+  ['"', '"'], ["“", "”"], ["„", "“"], ["«", "»"], ["»", "«"], ["”", "”"],
+]);
+
 const PARENTHESIS_INNER_SPACE_PATTERN = /(?:\(\s|\s\))/u;
 const NUMERIC_RANGE_SEGMENT_PATTERN = /\d+\s*[-–—]\s*\d+/gu;
 const NON_EN_DASH_RANGE_PATTERN = /\d+(?:\s*[-—]\s*|\s+–\s*|\s*–\s+)\d+/u;
@@ -306,17 +308,13 @@ function isFrenchGuillemetSpace(char: string | undefined): boolean {
   return char === "\u00A0" || char === "\u202F";
 }
 
-function hasInvalidFrenchGuillemetSpacing(text: string): boolean {
-  for (let i = text.indexOf("«"); i !== -1; i = text.indexOf("«", i + 1)) {
-    const next = text[i + 1];
-    if (isWhitespaceCharacter(next) && !isFrenchGuillemetSpace(next)) return true;
+function hasInvalidFrenchGuillemetSpacing(text: string, pairs: QuoteSpan[]): boolean {
+  for (const [open, close] of pairs) {
+    if (text[open] !== "«" && text[open] !== "»") continue;
+    for (const space of [text[open + 1], text[close - 1]]) {
+      if (isWhitespaceCharacter(space) && !isFrenchGuillemetSpace(space)) return true;
+    }
   }
-
-  for (let i = text.indexOf("»"); i !== -1; i = text.indexOf("»", i + 1)) {
-    const previous = text[i - 1];
-    if (isWhitespaceCharacter(previous) && !isFrenchGuillemetSpace(previous)) return true;
-  }
-
   return false;
 }
 
@@ -333,51 +331,24 @@ function hasMixedEmDashSpacing(text: string): boolean {
   return false;
 }
 
-function getQuoteBalanceIssue(text: string): string | null {
-  if (!GUARD_QUOTE_CHARACTER.test(text)) return null;
+type QuoteSpan = readonly [open: number, close: number];
 
-  let straightDoubleQuoteCount = 0;
-  const stack: Array<"«" | "“" | "„"> = [];
-
-  for (const char of text) {
-    if (char === "\"") {
-      straightDoubleQuoteCount++;
-      continue;
-    }
-
-    if (char === "“") {
-      if (stack[stack.length - 1] === "„") {
-        stack.pop();
-      } else {
-        stack.push(char);
-      }
-      continue;
-    }
-
-    if (char === "«" || char === "„") {
-      stack.push(char);
-      continue;
-    }
-
-    if (char === "»") {
-      if (stack.pop() !== "«") {
-        return "Target has unbalanced quotation marks.";
-      }
-      continue;
-    }
-
-    if (char === "”") {
-      if (stack.pop() !== "“") {
-        return "Target has unbalanced quotation marks.";
-      }
+/** Each pair may use a different supported convention. */
+function matchQuotes(text: string): QuoteSpan[] | null {
+  const stack: { open: number; closer: string }[] = [];
+  const spans: QuoteSpan[] = [];
+  for (const mark of text.matchAll(/["«»“”„]/gu)) {
+    const pending = stack.at(-1);
+    if (pending?.closer === mark[0]) {
+      spans.push([pending.open, mark.index]);
+      stack.pop();
+    } else {
+      const closer = QUOTE_CLOSERS.get(mark[0]);
+      if (!closer) return null;
+      stack.push({ open: mark.index, closer });
     }
   }
-
-  if (straightDoubleQuoteCount % 2 !== 0 || stack.length > 0) {
-    return "Target has unbalanced quotation marks.";
-  }
-
-  return null;
+  return stack.length ? null : spans;
 }
 
 function getDashStyleIssues(text: string, isFrench: boolean): DetectedIssue[] {
@@ -419,17 +390,18 @@ function getDashStyleIssues(text: string, isFrench: boolean): DetectedIssue[] {
   return issues;
 }
 
-function getQuoteInnerSpacingIssue(text: string, isFrench: boolean): string | null {
-  if (!GUARD_QUOTE_CHARACTER.test(text)) return null;
-
-  if (CURLY_QUOTE_INNER_SPACE_PATTERN.test(text)) {
-    return "Curly or directional quotes should not have spaces directly inside the quote marks.";
+function getQuoteInnerSpacingIssue(text: string, pairs: QuoteSpan[], isFrench: boolean): string | null {
+  for (const [open, close] of pairs) {
+    if (text[open] === '"') continue;
+    const guillemets = text[open] === "«" || text[open] === "»";
+    // French guillemet spacing has its own rule allowing non-breaking spaces.
+    if (guillemets && isFrench) continue;
+    if (isWhitespaceCharacter(text[open + 1]) || isWhitespaceCharacter(text[close - 1])) {
+      return guillemets
+        ? "Non-French guillemets should not have spaces directly inside the quote marks."
+        : "Curly or directional quotes should not have spaces directly inside the quote marks.";
+    }
   }
-
-  if (!isFrench && NON_FRENCH_GUILLEMET_INNER_SPACE_PATTERN.test(text)) {
-    return "Non-French guillemets should not have spaces directly inside the quote marks.";
-  }
-
   return null;
 }
 
@@ -535,15 +507,15 @@ export function detectTranslationIssues(
     });
   }
 
-  const quoteBalanceIssue = getQuoteBalanceIssue(styleText);
-  if (quoteBalanceIssue) {
+  const quotes = GUARD_QUOTE_CHARACTER.test(styleText) ? matchQuotes(styleText) : [];
+  if (quotes === null) {
     issues.push({
       type: "quote_balance",
-      message: quoteBalanceIssue,
+      message: "Target has unbalanced quotation marks.",
     });
   }
 
-  const quoteInnerSpacingIssue = getQuoteInnerSpacingIssue(styleText, isFrench);
+  const quoteInnerSpacingIssue = getQuoteInnerSpacingIssue(styleText, quotes ?? [], isFrench);
   if (quoteInnerSpacingIssue) {
     issues.push({
       type: "quote_inner_spacing",
@@ -566,7 +538,7 @@ export function detectTranslationIssues(
     });
   }
 
-  if (isFrench && hasInvalidFrenchGuillemetSpacing(styleText)) {
+  if (isFrench && hasInvalidFrenchGuillemetSpacing(styleText, quotes ?? [])) {
     issues.push({
       type: "french_guillemet_spacing",
       message: "Spaces inside French guillemets should use a non-breaking or narrow non-breaking space.",

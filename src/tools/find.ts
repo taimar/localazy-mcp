@@ -117,7 +117,8 @@ Each match reports which side matched in \`matched_in\`; resolve \`file_id\` via
                 matched_in: matchedIn,
               });
 
-              if (matches.length >= MAX_MATCHES) break;
+              // One extra match proves that this file was truncated.
+              if (matches.length > MAX_MATCHES) break;
             }
 
             found += matches.length;

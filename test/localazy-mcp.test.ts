@@ -68,7 +68,7 @@ test("normalizeTranslationsForImport expands flat dot-notation keys into nested 
     },
   });
 
-  assert.deepEqual(normalized, {
+  assert.deepEqual(JSON.parse(JSON.stringify(normalized)), {
     en: {
       messages: {
         welcome: "Welcome",

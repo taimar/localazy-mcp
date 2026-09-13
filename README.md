@@ -119,6 +119,11 @@ Two response fields hold values that repeat across results, so each result stays
 
 When a rule compares the target against the source, its issues also carry `source_value`.
 
+Key browsing reduces oversized pages so that the returned `next` cursor never
+skips undisplayed keys. If one key cannot fit, the tool returns an error asking
+for a larger `LOCALAZY_CHARACTER_LIMIT`. If response metadata alone exceeds the
+budget, array responses return a JSON error instead of incomplete JSON.
+
 ## Development
 
 ```bash
@@ -136,4 +141,6 @@ npm test         # Run tests
 - An upload clears the cache
 - A request for a language the project does not have is rejected with the list of available languages. Localazy answers such a request with an empty key list and no error, so without the check an unconfigured language looks like a clean audit
 - Reading keys does not count against the daily fetch quota, which applies to the file download endpoint this server never calls. Uploads count against the 100 imports per project per day limit
-- The server sends an upload once. A 5xx or a dropped connection cannot show whether Localazy accepted the import, so the server does not retry it. It retries only a 429, because that refusal proves nothing was written
+- Each page fetched during a scan uses its own rate-limit slot and retry policy. A failed page does not restart the scan from the first page
+- The server sends an upload once. A 5xx or a dropped connection cannot show whether Localazy accepted the import, so the server does not retry it. It retries only a 429 from the upload POST, because that refusal proves nothing was written
+- After an accepted upload, the file lookup retries independently. If the file is unavailable, the response keeps the import batch ID and includes a warning; do not resend the upload

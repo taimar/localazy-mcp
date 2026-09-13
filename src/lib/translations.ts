@@ -129,14 +129,19 @@ export async function listFlatTranslations(
   lang: string,
 ): Promise<FlatTranslation[]> {
   return cached(cacheKeys.flat(projectId, fileId, lang), async () => {
-    const keys = await withRetry(() =>
-      getClient().files.listKeys({
-        project: projectId,
-        file: fileId,
-        lang: asLocale(lang),
-      })
-    );
-    return flattenTranslations(keys);
+    // Charge and retry each page separately, retaining only the flat result.
+    // Raw page caching belongs to manual browsing.
+    const entries: FlatTranslation[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await withRetry(() => getClient().files.listKeysPage({
+        project: projectId, file: fileId, lang: asLocale(lang),
+        limit: 1000, extra_info: false, next: cursor,
+      }));
+      entries.push(...flattenTranslations(page.keys));
+      cursor = page.next;
+    } while (cursor);
+    return entries;
   });
 }
 

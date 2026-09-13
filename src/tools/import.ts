@@ -1,10 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { invalidateCache } from "../lib/cache.js";
-import { getClient } from "../lib/client.js";
+import { uploadJson } from "../lib/import.js";
 import { handleError } from "../lib/errors.js";
 import { jsonResponse, errorResponse } from "../lib/response.js";
-import { isOutcomeUnknown, withWriteRetry } from "../lib/retry.js";
+import { isOutcomeUnknown } from "../lib/retry.js";
 import { resolveProject } from "../lib/translations.js";
 
 type TranslationValue = string | string[] | { [key: string]: TranslationValue };
@@ -32,7 +31,7 @@ function isTranslationObject(value: TranslationValue): value is TranslationFile 
 
 function mergeTranslationObjects(target: TranslationFile, incoming: TranslationFile, path: string): void {
   for (const [key, value] of Object.entries(incoming)) {
-    const existing = target[key];
+    const existing = Object.hasOwn(target, key) ? target[key] : undefined;
     const nextPath = `${path}.${key}`;
 
     if (existing === undefined) {
@@ -50,7 +49,7 @@ function mergeTranslationObjects(target: TranslationFile, incoming: TranslationF
 }
 
 function normalizeTranslationFile(file: TranslationFile): TranslationFile {
-  const normalized: TranslationFile = {};
+  const normalized: TranslationFile = Object.create(null);
   for (const [rawKey, rawValue] of Object.entries(file)) {
     const parts = rawKey.split(".");
     const normalizedValue = isTranslationObject(rawValue)
@@ -59,10 +58,10 @@ function normalizeTranslationFile(file: TranslationFile): TranslationFile {
     let cursor = normalized;
 
     for (const part of parts.slice(0, -1)) {
-      const existing = cursor[part];
+      const existing = Object.hasOwn(cursor, part) ? cursor[part] : undefined;
 
       if (existing === undefined) {
-        const next: TranslationFile = {};
+        const next: TranslationFile = Object.create(null);
         cursor[part] = next;
         cursor = next;
         continue;
@@ -76,7 +75,7 @@ function normalizeTranslationFile(file: TranslationFile): TranslationFile {
     }
 
     const leafKey = parts[parts.length - 1]!;
-    const existing = cursor[leafKey];
+    const existing = Object.hasOwn(cursor, leafKey) ? cursor[leafKey] : undefined;
 
     if (existing === undefined) {
       cursor[leafKey] = normalizedValue;
@@ -107,7 +106,7 @@ export function register(server: McpServer): void {
     "localazy_upload_translations",
     {
       title: "Upload Translations",
-      description: `Create or update translation keys in a Localazy project. Returns the file ID and import batch ID.
+      description: `Create or update translation keys in a Localazy project. Returns the import batch ID and, when available, the file ID. A warning with an import batch ID means the upload was accepted but its file could not yet be retrieved; do not resend it.
 
 Cannot delete keys — that requires the Localazy web UI.`,
       inputSchema: z.object({
@@ -158,11 +157,10 @@ Cannot delete keys — that requires the Localazy web UI.`,
       import_as_new,
     }) => {
       try {
-        const api = getClient();
         const project = await resolveProject();
         const normalizedTranslations = normalizeTranslationsForImport(translations);
         try {
-          const result = await withWriteRetry(() => api.import.json({
+          const result = await uploadJson({
             project: project.id,
             json: normalizedTranslations,
             fileOptions: {
@@ -174,7 +172,7 @@ Cannot delete keys — that requires the Localazy web UI.`,
               forceSource: force_source,
               importAsNew: import_as_new,
             },
-          }));
+          });
 
           return jsonResponse(result);
         } catch (error) {
@@ -187,10 +185,6 @@ Cannot delete keys — that requires the Localazy web UI.`,
               ? `${message} This error does not show whether Localazy applied the upload. Check the file in Localazy before you send it again.`
               : message
           );
-        } finally {
-          // Also on failure: a write that reported an error may still have
-          // landed, so whatever was cached before it is suspect either way.
-          invalidateCache();
         }
       } catch (error) {
         return errorResponse(handleError(error));

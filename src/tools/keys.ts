@@ -90,7 +90,10 @@ Use for manual paginated browsing. To search or QA the project, prefer localazy_
 
         const hint = "Use a smaller 'limit', pagination with the 'next' cursor, or a 'prefix' filter.";
 
-        const fetchPage = async (pageLimit: number) => {
+        // A cursor belongs to the entire raw API page, including keys removed
+        // by prefix filtering. Only return it once all matching keys fit.
+        let pageLimit = limit;
+        for (;;) {
           const result = await listKeysPage({
             projectId: project.id,
             fileId: file_id,
@@ -103,28 +106,23 @@ Use for manual paginated browsing. To search or QA the project, prefer localazy_
           const keys = prefix
             ? output.keys.filter((k) => k.key === prefix || k.key.startsWith(prefix + "."))
             : output.keys;
-          return { result, keys, next: output.next };
-        };
-
-        const page = await fetchPage(limit);
-        const response = jsonResponseArray(
-          page.keys, "keys",
-          { count: page.keys.length, ...(page.next ? { next: page.next } : {}) },
-          hint,
-        );
-
-        // If truncation occurred but the API had no more pages, re-fetch with
-        // a reduced limit so the API returns a real `next` cursor for recovery.
-        if (response._arrayMeta.truncated && !page.result.next) {
-          const retry = await fetchPage(response._arrayMeta.includedCount);
-          return jsonResponseArray(
-            retry.keys, "keys",
-            { count: retry.keys.length, ...(retry.next ? { next: retry.next } : {}) },
+          const response = jsonResponseArray(
+            keys, "keys",
+            { count: keys.length, ...(output.next ? { next: output.next } : {}) },
             hint,
           );
+          if (response.isError || !response._arrayMeta.truncated) return response;
+          if (pageLimit === 1) {
+            return errorResponse(
+              "Error: a translation key exceeds the response character budget. " +
+              "Increase LOCALAZY_CHARACTER_LIMIT to read it in full. The cursor has not advanced."
+            );
+          }
+          pageLimit = Math.max(1, Math.min(
+            pageLimit - 1,
+            response._arrayMeta.includedCount || Math.floor(pageLimit / 2),
+          ));
         }
-
-        return response;
       } catch (error) {
         return errorResponse(handleError(error));
       }

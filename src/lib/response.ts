@@ -68,12 +68,19 @@ export function jsonResponseArray<T>(
 ): ArrayResponse {
   const hint = truncationHint ?? DEFAULT_TRUNCATION_HINT;
   const total = items.length;
-  const skeleton = JSON.stringify({ ...wrapper, [itemsKey]: [], _meta: { included: 0, total, truncated: true, hint } });
-  const budget = CHARACTER_LIMIT - (skeleton.length - 2); // -2 for empty "[]"
+  const skeleton = JSON.stringify({ ...wrapper, [itemsKey]: [], _meta: { included: total, total, truncated: true, hint } });
+  const budget = CHARACTER_LIMIT - skeleton.length;
 
   if (budget <= 0) {
-    const fallback = jsonResponse({ ...wrapper, [itemsKey]: items }, truncationHint);
-    return { ...fallback, _arrayMeta: { includedCount: 0, totalCount: total, truncated: true } };
+    // Metadata alone cannot fit. Do not slice JSON or return partial legends
+    // whose missing entries would make the values impossible to interpret.
+    return {
+      isError: true,
+      content: [{ type: "text", text: JSON.stringify({
+        error: "Response metadata exceeds the character budget. Narrow the request or increase LOCALAZY_CHARACTER_LIMIT.",
+      }) }],
+      _arrayMeta: { includedCount: 0, totalCount: total, truncated: true },
+    };
   }
 
   const included = items.slice(0, countItemsWithinBudget(items, budget));
